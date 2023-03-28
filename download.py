@@ -5,6 +5,7 @@ import requests
 import yaml
 import numpy as np
 import subprocess
+from tqdm import tqdm
 
 DATA_DIR    = "data/"
 TEMP_DIR    = DATA_DIR + "temp/"
@@ -57,15 +58,18 @@ def set_auth_from_env():
 		PASS = ENV_PASS
 		print("USER and PASS set to env variables.")
 
+
 def points_from_file(path):
 	'''
 	Load file in path with each line corresponding to a point. Each point must follow the Lat Lon       
-	order so that each line in the file is a string matching the ESA's SciHub OpenSearch format.  
-	Each line can be inserted as is in a string "Intersects(%s)".
+	order so that each line in the file is a string matching ESA's SciHub OpenSearch format. In
+	other words, each line can be inserted-as is-in the "Intersects(%s)" section of the openSearch
+	query.
 	'''
 	with open(path,'r') as fp:
 		geom_list = [i.rstrip() for i in fp.readlines()]
 	return geom_list
+
 
 def opensearch_set_query(params):
 	query = 'footprint:\"Intersects(%s)\"' % params['coordinates']
@@ -81,33 +85,47 @@ def opensearch_set_query(params):
 	query += 'cloudcoverpercentage:%s' % params['cloudcoverpercentage']
 	return query
 
+
 def opensearch_parse_entry(xml_entry):
-	#id
-	#id_tstamp
-	#id_tile
-	#filename
-	#uuid
-	#footprint
-	#waterpercentage
-	#vegetationpercentage
-	pass
+	'''
+	unused
+	'''
+	uuid = xml_entry.find('other:id',namespaces=NS).text
 
-def opensearch_parse_list(query,S,n_results):
+	for s in xml_entry.findall('other:str',NS):
+		if s.attrib['name'] == 'footprint':
+			footprint = s.text
 
+		if s.attrib['name'] == 'filename':
+			filename = s.text
+
+	for d in xml_entry.findall('other:double',NS):
+		if d.attrib['name'] == 'waterpercentage':
+			waterpercentage = d.text
+
+		if d.attrib['name'] == 'cloudcoverpercentage':
+			cloudcoverpercentage = d.text
+
+	return (uuid,filename,footprint,waterpercentage,cloudcoverpercentage)
+
+
+def opensearch_parse_list(S,query,n_results):
 	n_pages   = n_results//100 + 1
 	remainder = n_results % 100
-
 	entry_array = []
 
-	#TODO -- This in FOR-LOOP
+
 	for current_page in range(n_pages):
 
+		#get page
 		payload = {'start':current_page,'rows':100,'q':query}
 		resp = S.get(OS_BASE_URI,params=payload)
 		root = ET.fromstring(resp.text)
 
+		#Parse -- get list
 		entries = root.findall('other:entry',namespaces=NS)
 		
+		#Parse each entry
 		for e in entries:
 			uuid = e.find('other:id',NS).text
 
@@ -126,83 +144,151 @@ def opensearch_parse_list(query,S,n_results):
 				if d.attrib['name'] == 'cloudcoverpercentage':
 					cloudcoverpercentage = d.text
 
+			#append each entry to array
 			entry_array += [(uuid,filename,footprint,waterpercentage,cloudcoverpercentage)]
-
-
 
 	return np.array(entry_array)
 
-def opensearch_get_header(query,S):
+
+def opensearch_get_header(S,query,params):
+
 	page_start,page_rows,n_results = 0,0,0
-	# if method == 'curl':
-	# 	q = urllib.parse.quote(query,safe=',()/[]:')
-	# 	payload = OS_BASE_URI + '?start=' + str(page_start) + '&rows=' + str(page_rows) + '&q=' + q
-	# 	userpass = USER + ':' + PASS
-	# 	resp = subprocess.run(['curl', '-u',userpass,payload],stdout=subprocess.PIPE,text=True)
-	# 	root = ET.fromstring(resp)
 
-	payload = {'start':page_start, 'rows':page_rows, 'q':query} #return 0 results
+	#request
+
+	payload = {'start':0, 'rows':0, 'q':query} #return 0 results
 	resp = S.get(OS_BASE_URI,params=payload)	
-	# resp    = requests.get(OS_BASE_URI, auth=(USER,PASS),params=payload)
 
+	#Correct response codes
 	assert resp.status_code != 401, "Got HTTP 401: Unauthorized. Check user and password."
 	assert resp.status_code == 200, "opensearch_get_header(): Got code %s." % resp.status_code
 	
+	#Parse response
 	root = ET.fromstring(resp.text)
-	n_results = int(root.find('os:totalResults',NS).text)
+	n_results = int(root.find('os:totalResults',namespaces=NS).text)
+	n_pages = n_results//100 + 1
 
-	# print("Coordinates %s")
-	n_pages = n_results//100 + 1 
+	#Print results adn return
+	print("For coordinates %s" % params['coordinates'])
 	print("Found %i results in %i pages." % (n_results,n_pages))
 	return n_results
 
-def odata_image_uri():
-	pass
 
-def odata_mtdxml_uri():
-	pass
+def odata_image_uri(table_row,bands):
+	uuid      = table_row[0]
+	filename  = table_row[1]
+	level     = filename.split('_')[1][3:] #L2A from filename
+	tile      = filename.split('_')[-2]
+	dstrip    = table_row[5].split('_')[-2][1:]
+	granule   = table_row[6].split('_')[-3]
+	subdir    = "%s_%s_%s_%s" % (level,tile,granule,dstrip)
+	ingestion = filename.split('_')[2]
+
+	uris = []
+
+	for band in bands:
+		img_path  = "%s_%s_%s_10m.jp2" % (tile,ingestion,band)
+
+		uri = OD_BASE_URI
+		uri += "Products('%s')/" % uuid
+		uri += "Nodes('%s')/" % filename
+		uri += "Nodes('GRANULE')/"
+		uri += "Nodes('%s')/" % subdir
+		uri += "Nodes('IMG_DATA')/"
+		uri += "Nodes('R10m')/"
+		uri += "Nodes('%s')/$value" % img_path
+
+		uris += [uri]
+
+	return uris
+
+
+def odata_mtdxml_uri(table_row):
+	#split/get URI elements for table of metadata
+	uuid     = table_row[0]
+	filename = table_row[1]
+	level    = file.split('_')[1][3:]
+	tile     = file.split('_')[-2]
+	dstrip   = table_row[5].split('_')[-2][1:] 
+	granule  = table_row[6].split('_')[-3]
+
+	#build and return
+	uri = OD_BASE_URI
+	uri += "Products('%s')/" % uuid
+	uri += "Nodes('%s')/" % filename
+	uri += "Nodes('MTD_MSI%s.xml')/$value" % level 
+	return uri
 
 def odata_get_image():
 	pass
 
-def odata_get_mtdxml():
-	pass
 
-def odata_check_status():
-	pass
+def odata_get_mtdxml(S,table_row,uri):
+	resp = S.get(uri,stream=True)
+	total_size = int(resp.headers.get('content-length',0))
+	block_size = 1024
+	bar = tqdm(total=total_size, unit='iB',unit_scale=True)
+	out_file_path = ''
+	with open(out_file_path,'wb') as fp:
+		for chunk in resp.iter_content(block_size):
+			written = fp.write(chunk)
+			bar.update(written)
+			
+	bar.close()
+	if total_size != 0 and bar.n != total_size:
+		print("Error. Incorrect file size during download.")
 
-def odata_trigger_offline_request(uuid_list):
+
+def odata_check_status(S,uri):
+	resp = S.get(uri)
+	if resp.text == 'true':
+		return True
+	return False
+
+
+def odata_trigger_offline_request(S,uuid_list):
 	for uuid in uuid_list:
 		uri = OD_BASE_URI + "Products('%s')/$value" % (uuid)
-		#HTTP header 202 is success
+
+		#HTTP header 202 means good
 
 
-def odata_get_offline_list():
+def odata_get_offline_list(S,product_list):
+	for row in product_list:
+		uri = odata_mtdxml_uri(row)
+		odata_check_status(S,uri)
+
+
+
+def parse_mtd_xml(path):
+	pass
+
+
+def remove_duplicates(product_list):
+	pass
+
+
+def progress_bar():
 	pass
 
 
 if __name__ == '__main__':
-	pass
+	set_auth_from_env()
 
 	#loading stuff
 	points = points_from_file('./dat/nevada_centroid.txt')
 	params['coordinates'] = points[10]
-	query = opensearch_set_query(params)
-	set_auth_from_env()
 
 	#Set requests.Session
 	S      = requests.Session()
 	S.auth = (USER,PASS)
+	query  = opensearch_set_query(params)
 
 	#header
-	n_results = opensearch_get_header(query,S)
-	# n_pages   = n_results//100 + 1
-	# remainder = n_results % 100
-	# print("Coordinates %s" % params['coordinates'])
-	# print("Found %i results in %i pages." % (n_results,n_pages))
+	n_results = opensearch_get_header(S,query,params)
 
-	a = opensearch_parse_list(query,S,n_results)
-	print(a[:,0:2])
+	a = opensearch_parse_list(S,query,n_results)
+	print(a[:,1])
 	print(a.shape)
 
 	S.close()
