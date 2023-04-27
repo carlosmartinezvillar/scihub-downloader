@@ -7,6 +7,7 @@ import numpy as np
 import subprocess
 import argparse
 from tqdm import tqdm
+import time
 
 #Global variables for some restrictive parameters
 DATA_DIR    = "dat/"
@@ -34,31 +35,26 @@ PLATFORMNAME = "Sentinel-2"
 PRODUCT      = "S2MSI2A"
 START_TIME   = "2020-01-01T00:00:00.000Z"
 STOP_TIME    = "2020-12-01T23:59:59:999Z"
-RANGE_TIME  = "[%s TO %s]" % (START_TIME,STOP_TIME)
+RANGE_TIME   = "[%s TO %s]" % (START_TIME,STOP_TIME)
 CLOUD_PERCNT = "[0 TO 36]"
-BANDS = ["B02","B03","B04","B08"]
+BANDS        = ["B02","B03","B04","B08"]
 
-params = {
-	'coordinates': POINT,
-	'platformname': PLATFORMNAME,
-	'producttype': PRODUCT,
-	'cloudcoverpercentage': CLOUD_PERCNT,
-	'beginPosition': RANGE_TIME,
-	'endPosition:': RANGE_TIME,
-	'startdate': START_TIME,
-	'enddate': STOP_TIME,
-	'bands': BANDS
-}
+
 ####################################################################################################
 def set_auth_from_env(env_user_str,env_pass_str):
 	ENV_USER = os.getenv(env_user_str)
 	ENV_PASS = os.getenv(env_pass_str)
-	if (ENV_USER is not None) and (ENV_PASS is not None):
-		global USER
-		global PASS
-		USER = ENV_USER
-		PASS = ENV_PASS
-		print("USER and PASS set to env variables.")
+	if (ENV_USER is not None):
+		if (ENV_PASS is not None):
+			global USER
+			global PASS
+			USER = ENV_USER
+			PASS = ENV_PASS
+			print("USER and PASS set to env variables.\n")
+		else:
+			print("Env variable given for password is not set.")
+	else:
+		print("Env variable given for user name is not set.")
 
 
 def load_points_from_file(path):
@@ -129,9 +125,12 @@ def opensearch_parse_page(root):
 
 def opensearch_parse_pages(S,query,n_results):
 	'''
-	Parse all pages returned by a OpenSearch query and parse them.
+	Parse all pages returned by a OpenSearch query.
+	Returns a numpy array with the products' information.
 	'''
 	n_pages = n_results//100 + 1
+
+	print("Parsing pages...")
 
 	for current_page in range(n_pages):
 		payload = {'start':current_page,'rows':100,'q':query}
@@ -149,7 +148,8 @@ def opensearch_parse_pages(S,query,n_results):
 
 def opensearch_parse(S,query,n_results):
 	'''
-	Iterate through all pages returned by OpenSearch query and parse them.	
+	Iterate through all pages returned by OpenSearch query and parse them.
+	Returns a numpy array with the products' information.
 	'''
 	n_pages   = n_results//100 + 1 
 	remainder = n_results % 100    #what's left in the last page
@@ -189,8 +189,11 @@ def opensearch_parse(S,query,n_results):
 
 
 def opensearch_get_header(S,query,params):
+	n_results = 0
 
-	page_start,page_rows,n_results = 0,0,0
+	print("Platform: %s" % params['platformname'],end=', ')
+	print("Product: %s" % params['producttype'],end=' / ')
+	print("%s--%s" %(params['startdate'][0:10],params['enddate'][0:10]))
 
 	if len(params['coordinates']) < 80:
 		print("Coordinates: %s" % params['coordinates'])
@@ -199,41 +202,61 @@ def opensearch_get_header(S,query,params):
 
 	#request
 	payload = {'start':0, 'rows':0, 'q':query} #return 0 results
-	resp    = S.get(OS_BASE_URI,params=payload)
+	res     = S.get(OS_BASE_URI,params=payload)
 
 	#Correct response codes
-	assert resp.status_code != 401, "HTTP 401: Unauthorized. Check user and password."
-	assert resp.status_code == 200, "opensearch_get_header(): Got code %s." % resp.status_code
+	assert res.status_code != 401, "opensearch_get_header(): Got HTTP 401: Check user and password."
+	assert res.status_code == 200, "opensearch_get_header(): Got HTTP %s." % res.status_code
 	
 	#Parse response
-	root      = ET.fromstring(resp.text)
+	root      = ET.fromstring(res.text)
 	n_results = int(root.find('os:totalResults',namespaces=NS).text)
 	n_pages   = n_results//100 + 1
 
 	#Print feedback and return
-
-	print("Found %i results in %i pages." % (n_results,n_pages))
+	print("Found %i results in %i page(s)." % (n_results,n_pages))
 	print("="*100)
 	return n_results
 
 
-def opensearch_multi_coordinate(S,path):
-	coords = load_points_from_file(path)
+def opensearch_multi_coordinate(params,coords_path):
+	total_n_results = 0
 
-	for c in coords:
+	#SESSION
+	set_auth_from_env('DHUS_USER','DHUS_PASS')
+	S = requests.Session()
+	S.auth = (USER,PASS)
+
+	#LIST OF COORDS
+	coords = load_points_from_file(coords_path)
+
+	for i,c in enumerate(coords):
+		#UPDATE COORDS IN QUERY
 		params['coordinates'] = c
-		query = opensearch_set_query(params)
-		uri   = None
+		query     = opensearch_set_query(params)
 
+		#NR OF RESULTS PER COORDINATE
+		n_results = opensearch_get_header(S,query,params)
+		total_n_results += n_results
 
+		# #PARSE PAGES OF RESULTS
+		if i == 0:
+			products = opensearch_parse(S,query,params)
+		else:
+			products = np.concatenate([products,opensearch_parse(S,query,params)],axis=0)
+
+	print("Found %i products for %i geometries." % (total_n_results,len(coords)))
+
+	return products
 
 def odata_image_uri(row,band,resolution):
 	'''
 	Build and return the URI for a single SciHub image file. Input row in table follows the format
 	[uuid,filename,footprint,waterpercentage,cloudcoverpercentage,datastrip,granule].
 	'''
+	#TODO--do a check for incompatible band-res combos (global vars)
 
-	#get uri parts from table info
+	#get uri components from table info in a tidy way
 	uuid      = row[0]
 	filename  = row[1]
 	level     = filename.split('_')[1][3:] #L2A from filename
@@ -244,7 +267,7 @@ def odata_image_uri(row,band,resolution):
 	ingestion = filename.split('_')[2]
 	img_path  = "%s_%s_%s_%s.jp2" % (tile,ingestion,band,resolution)
 
-	#build URI and return
+	#build the URI and return it
 	uri = OD_BASE_URI
 	uri += "Products('%s')/"    % uuid
 	uri += "Nodes('%s')/"       % filename
@@ -366,22 +389,30 @@ def progress_bar():
 
 
 if __name__ == '__main__':
+
+	params = {
+		'coordinates': POINT,
+		'platformname': PLATFORMNAME,
+		'producttype': PRODUCT,
+		'cloudcoverpercentage': CLOUD_PERCNT,
+		'beginPosition': RANGE_TIME,
+		'endPosition:': RANGE_TIME,
+		'startdate': START_TIME,
+		'enddate': STOP_TIME,
+		'bands': BANDS
+	}
+
+	#SET SESSION AUTH
 	set_auth_from_env('DHUS_USER','DHUS_PASS')
-
-	#loading stuff
-	points = load_points_from_file(DATA_DIR + 'test_sites.txt')
-	params['coordinates'] = points[0]
-
-	#Set requests.Session
 	S      = requests.Session()
 	S.auth = (USER,PASS)
-	query  = opensearch_set_query(params)
 
-	#header
-	n_results = opensearch_get_header(S,query,params)
+	#LOAD COORDS
+	# points = load_points_from_file(DATA_DIR + 'sites.txt')
 
-	arr = opensearch_parse_multipage(S,query,n_results)
-	print(arr[:,1])
-	# print(a.shape)
+	# params['coordinates'] = points[0]
+	# query     = opensearch_set_query(params)
+	# n_results = opensearch_get_header(S,query,params)
 
-	# S.close()
+	opensearch_multi_coordinate(params,DATA_DIR + 'sites.txt')
+	pass
