@@ -11,9 +11,10 @@ import time
 
 #Global variables for some restrictive parameters
 DATA_DIR    = "dat/"
+LOGS_DIR    = "log/"
 TEMP_DIR    = DATA_DIR + "temp/"
-OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API URI root
-OD_BASE_URI = "https://scihub.copernicus.eu/dhus/odata/v1/" #OpenData   API URI root
+OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API service root URI
+OD_BASE_URI = "https://scihub.copernicus.eu/dhus/odata/v1/" #OpenData   API service root URI
 S2_10_BANDS = ['AOT','B02','B03','B04','B08','TCI','WVP']
 S2_20_BANDS = ['AOT','B02','B03','B04','B05','B06','B07','B8A','B11','B12','SCL','TCI','WVP']
 S2_60_BANDS = ['AOT','B02','B03','B04','B05','B06','B07','B09','B8A','B11','B12','SCL','TCI','WVP']
@@ -21,7 +22,7 @@ S2_60_BANDS = ['AOT','B02','B03','B04','B05','B06','B07','B09','B8A','B11','B12'
 #OpenSearch XML Namespaces
 NS = {'os':'http://a9.com/-/spec/opensearch/1.1/', 'other':'http://www.w3.org/2005/Atom'}
 
- #temporary
+#temporary
 USER = None 
 PASS = None
 
@@ -33,13 +34,25 @@ POLYGON = "POLYGON((-120.41786863103002 42.17892002081763,-120.90811282563863 41
 -120.41786863103002 42.17892002081763,-120.41786863103002 42.17892002081763))"
 PLATFORMNAME = "Sentinel-2"
 PRODUCT      = "S2MSI2A"
-START_TIME   = "2020-01-01T00:00:00.000Z"
-STOP_TIME    = "2020-12-01T23:59:59:999Z"
+START_TIME   = "2022-05-11T00:00:00.000Z"
+STOP_TIME    = "2023-05-11T23:59:59:999Z"
 RANGE_TIME   = "[%s TO %s]" % (START_TIME,STOP_TIME)
-CLOUD_PERCNT = "[0 TO 36]"
+CLOUD_PERCNT = "[0 TO 10]"
 BANDS        = ["B02","B03","B04","B08"]
 
+####################################################################################################
+class Downloader():
+	def __init__(self):
+		self.coord_list = None
+		self.parameters = None
+		self.query      = None
+		self.session    = None
 
+	#set
+	#set
+	#get
+	#get
+	#etc
 ####################################################################################################
 def set_auth_from_env(env_user_str,env_pass_str):
 	ENV_USER = os.getenv(env_user_str)
@@ -123,17 +136,18 @@ def opensearch_parse_page(root):
 	return np.array(entries)
 
 
-def opensearch_parse_pages(S,query,n_results):
+def opensearch_parse_pages(S,query,params):
 	'''
 	Parse all pages returned by a OpenSearch query.
 	Returns a numpy array with the products' information.
 	'''
+	n_results = opensearch_get_header(S,query,params)
 	n_pages = n_results//100 + 1
 
-	print("Parsing pages...")
+	print("Parsing pages...\n")
 
 	for current_page in range(n_pages):
-		payload = {'start':current_page,'rows':100,'q':query}
+		payload = {'start':current_page*100,'rows':100,'q':query}
 		resp    = S.get(OS_BASE_URI,params=payload)	
 		root    = ET.fromstring(resp.text)
 		page_results = opensearch_parse_page(root)
@@ -146,25 +160,31 @@ def opensearch_parse_pages(S,query,n_results):
 	return results
 
 
-def opensearch_parse(S,query,n_results):
+def opensearch_parse(S,query,params):
 	'''
 	Iterate through all pages returned by OpenSearch query and parse them.
 	Returns a numpy array with the products' information.
 	'''
+
+	#FIND NR OF PAGES TO PARSE
+	n_results = opensearch_get_header(S,query,params)
 	n_pages   = n_results//100 + 1 
-	remainder = n_results % 100    #what's left in the last page
+	# remainder = n_results % 100  #requesting 100 still returns what's left at the end
 	entries   = []
 
+	#ITERATE THRU PAGES BY 100 RESULTS AT A TIME
+	print("Parsing results...")
+
 	for current_page in range(n_pages):
-		#get page
-		payload = {'start':current_page,'rows':100,'q':query}
+		#GET PAGE -- SERVER REQUESTs
+		payload = {'start':current_page*100,'rows':100,'q':query}
 		resp = S.get(OS_BASE_URI,params=payload)
 		root = ET.fromstring(resp.text)
 
-		#Parse -- list of entries
+		#PARSE XML-- list of entries
 		entries_xml = root.findall('other:entry',namespaces=NS)
 		
-		#Parse -- each entry in page
+		#PARSE XML-- each entry in page
 		for e in entries_xml:
 			uuid = e.find('other:id',NS).text
 
@@ -182,23 +202,25 @@ def opensearch_parse(S,query,n_results):
 				if d.attrib['name'] == 'cloudcoverpercentage':
 					cloudcoverpercentage = d.text
 
-			#append each entry row to a list
+			#APPEND ENTRIES TO LIST
 			entries += [(uuid,filename,waterpercentage,cloudcoverpercentage)]
 
 	return np.array(entries)
 
 
 def opensearch_get_header(S,query,params):
-	n_results = 0
-
-	print("Platform: %s" % params['platformname'],end=', ')
-	print("Product: %s" % params['producttype'],end=' / ')
-	print("%s--%s" %(params['startdate'][0:10],params['enddate'][0:10]))
 
 	if len(params['coordinates']) < 80:
 		print("Coordinates: %s" % params['coordinates'])
 	else:
 		print("Coordinates: %s" % params['coordinates'][0:65])
+	print("Platform: %s" % params['platformname'],end=', ')
+	print("Product: %s" % params['producttype'],end=', ')
+	print("Dates: %s/%s" %(params['startdate'][0:10],params['enddate'][0:10]),end=', ')
+	print("CloudPct: %s" % params['cloudcoverpercentage'])
+	# print(query)
+
+	n_results = 0
 
 	#request
 	payload = {'start':0, 'rows':0, 'q':query} #return 0 results
@@ -215,39 +237,48 @@ def opensearch_get_header(S,query,params):
 
 	#Print feedback and return
 	print("Found %i results in %i page(s)." % (n_results,n_pages))
-	print("="*100)
 	return n_results
 
 
-def opensearch_multi_coordinate(params,coords_path):
-	total_n_results = 0
-
-	#SESSION
-	set_auth_from_env('DHUS_USER','DHUS_PASS')
-	S = requests.Session()
-	S.auth = (USER,PASS)
+def opensearch_coordinate_list(S,coords_path,params):
+	n_results    = 0
+	all_products = None
 
 	#LIST OF COORDS
-	coords = load_points_from_file(coords_path)
+	coords = load_points_from_file(coords_path)[0:2]
 
 	for i,c in enumerate(coords):
 		#UPDATE COORDS IN QUERY
 		params['coordinates'] = c
 		query     = opensearch_set_query(params)
 
-		#NR OF RESULTS PER COORDINATE
-		n_results = opensearch_get_header(S,query,params)
-		total_n_results += n_results
-
-		# #PARSE PAGES OF RESULTS
+		#PARSE PAGES OF RESULTS
 		if i == 0:
-			products = opensearch_parse(S,query,params)
+			all_products = opensearch_parse_pages(S,query,params)
+			if len(all_products.shape) == 1:
+				all_products = all_products.reshape((0,4))
 		else:
-			products = np.concatenate([products,opensearch_parse(S,query,params)],axis=0)
+			products = opensearch_parse_pages(S,query,params)
+			if len(products) > 0:
+				all_products = np.concatenate([all_products,products],axis=0)
 
-	print("Found %i products for %i geometries." % (total_n_results,len(coords)))
 
-	return products
+	n_results = all_products.shape[0]
+	print("Found %i products for %i geometries." % (n_results,len(coords)))
+
+	return all_products
+
+
+def remove_duplicates(product_list):
+	'''
+	Go through existing numpy array with sentinel product ids and, duh, remove
+	duplicates.
+	'''
+	uuids,index,counts = np.unique(product_list[:,0],return_index=True,return_counts=True)
+	n_duplicates = product_list.shape[0] - len(uuids)
+	print("%i duplicates removed from original array of %i" %(n_duplicates,product_list.shape[0]))
+	return product_list[index]
+
 
 def odata_image_uri(row,band,resolution):
 	'''
@@ -279,9 +310,31 @@ def odata_image_uri(row,band,resolution):
 	return uri
 
 
+def odata_get_image(S,uri):
+	res   = S.get(uri,stream=True)
+	tsize = int(res.headers.get('content-length',0))
+	bsize = 1024
+	# opath = DATA_DIR + row[1]
+
+	#Check for metadata
+	subdir = DATA_DIR + row[1]
+	if not os.path.isdir(subdir):
+		print("No %s subdirectory found." % subdir)
+		return
+
+	bar = tqdm(total=tsize, unit='iB', unit_scale=True)
+	with open(opath,'wb') as fp:	
+		for chunk in res.iter_content(bsize):
+			bar.update(fp.write(chunk))
+	bar.close()
+
+	if  tsize != 0 and bar.n != tsize:
+		print("Error. Incorrect file size during download.")
+
+
 def odata_mtdxml_uri(row):
 	'''
-	Build and set the URI for the metadata file of a product given the 
+	Build and set the URI for the metadata file of a product
 	'''
 	#split/get URI elements for table of metadata
 	uuid     = row[0]
@@ -297,29 +350,34 @@ def odata_mtdxml_uri(row):
 	return uri
 
 
-def odata_get_image(S,uri):
-	pass
+def odata_get_mtdxml(S,row):
+	#if dir and mtd.xml --> do nothing
 
-
-def odata_get_mtdxml(S,row,uri):
+	uri  = odata_mtdxml_uri(row)
 	resp = S.get(uri,stream=True)
 	total_size = int(resp.headers.get('content-length',0))
 	block_size = 1024
+	out_file_path = "%s%s/MTD.xml" % (DATA_DIR, row[1])
+
+	if not os.path.isdir(DATA_DIR + row[1]):
+		os.mkdir(DATA_DIR + row[1])
+
+	#Bar + Download
 	bar = tqdm(total=total_size, unit='iB',unit_scale=True)
-	out_file_path = ''
 	with open(out_file_path,'wb') as fp:
 		for chunk in resp.iter_content(block_size):
 			written = fp.write(chunk)
 			bar.update(written)
-			
 	bar.close()
+
+	#Error
 	if total_size != 0 and bar.n != total_size:
 		print("Error. Incorrect file size during download.")
 
 
-def odata_check_status(S,uri):
+def odata_check_online(S,uri):
 	'''
-	Takes the URI passed to it in uri and sends request to check if product is currently online or 
+	Takes the given URI and sends request to check if product is currently online or 
 	not. S is the requests.Session object. Returns bool.
 	'''
 	resp = S.get(uri)
@@ -328,64 +386,65 @@ def odata_check_status(S,uri):
 	return False
 
 
-def odata_trigger_offline_request(S,uuid_list):
-	for uuid in uuid_list:
-		uri = OD_BASE_URI + "Products('%s')/$value" % (uuid)
+def odata_trigger_offline_request(S,product_list):
+	for i,row in enumerate(product_list):
+		if i == 20:
+			break
+		uuid = row[0]
+		uri  = OD_BASE_URI + "Products('%s')/$value" % uuid
+
 		#HTTP header 202 means good
-		print("Triggering offline request for product %s" % uuid)
+		print("[%i/%i]" % (i,len(uuid)) ,end=" ")
+		print("Triggering offline request for product %s" % uuid, end=' -- ')
 		resp = S.get(uri)
-		print("Status code: %s" % resp.status_code)
+		print("http: %s" % resp.status_code)
 
 
 def odata_get_offline_list(S,product_list):
 	status_list = []
+	N           = product_list.shape[0]
+
+	print("\nChecking Online/Offline status of products...")
+	print("="*100)
+
+	#ITERATE THROUGH PRODUCTS AND REQUEST
 	for i,row in enumerate(product_list):
 		uuid = row[0]
 		uri  = OD_BASE_URI + "Products('%s')/Online/$value" % uuid
-		print("[%i/%i]" % (i+1,product_list.shape[0]),end=' ')
-		print("Checking status of " + uuid, end=' -- ')
-		status = odata_check_status(S,uri) #returns true or false
+		print("[%i/%i]" % (i+1,N),end=' ')
+		print(uuid, end=' -- ')
+		status = odata_check_online(S,uri) #returns bool
+
 		if status:
-			print("Online")
+			print("online")
 		else:
-			print("Offline")
+			print("offline") #....set flag here instead? 
+
 		status_list.append(status)
 	
-	n_offline = np.array(status_list).sum()
-	print("%i/%i products offline" % (n_offline,len(status_list)))
+	#NumPy for bool ops in whole array
+	status_array = np.array(status_list)
+	print("\n%i/%i products offline\n" % ((~status_array).sum(), N) )
 
-	#numpy append to array as another string col
-	product_list[:,-1] = status_list
-	product_list[product_list[:,-1] == 'False',-1] = 'offline'
-	product_list[product_list[:,-1] == 'True',-1] = 'online'
+	#Whole array is string so set a str flag
+	product_list = np.append(product_list, np.array(['?']*N).reshape((N,1)),axis=1)
+	product_list[status_array,-1]  = 'online'
+	product_list[~status_array,-1] = 'offline'
+	
+	#SAVE ARRAY INTO TWO DISTINCT TSV FILES FOR ON/OFFLINE
+	print("Writing list of offline products to %s." % LOGS_DIR + "offline.txt" )
+	np.savetxt(LOGS_DIR + 'offline.txt', product_list[~status_array],fmt='%s',delimiter='\t')
+	print("Writing list of online products to %s." % LOGS_DIR + "online.txt" )
+	np.savetxt(LOGS_DIR + 'online.txt', product_list[status_array],fmt='%s',delimiter='\t')
+	return product_list
 
 
 def parse_mtdxml(path):
 	'''
 	Get datastrip id and granule id from MTD_MSI
 	'''
-	pass
-
-
-def remove_duplicates(product_list):
-	'''
-	Go through existing numpy array with sentinel product ids and, duh, remove
-	duplicates.
-	'''
-	pass
-
-
-def write_offline_txt(product_list):
-	with open('./dat/offline.txt') as fp:
-		fp.write()
-	pass
-
-
-def progress_bar():
-	'''
-	meh
-	'''
-	pass
+	with open(path) as fp:
+		
 
 
 if __name__ == '__main__':
@@ -407,12 +466,15 @@ if __name__ == '__main__':
 	S      = requests.Session()
 	S.auth = (USER,PASS)
 
-	#LOAD COORDS
-	# points = load_points_from_file(DATA_DIR + 'sites.txt')
-
+	# #LOAD COORDS
+	# points = load_points_from_file(LOGS + 'sites.txt')
 	# params['coordinates'] = points[0]
 	# query     = opensearch_set_query(params)
 	# n_results = opensearch_get_header(S,query,params)
+	# arr       = opensearch_parse_pages(S,query,params)
 
-	opensearch_multi_coordinate(params,DATA_DIR + 'sites.txt')
+	arr = opensearch_coordinate_list(S,'test_sites.txt', params)
+	arr = remove_duplicates(arr)
+	arr = odata_get_offline_list(S, arr)
+
 	pass
