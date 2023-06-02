@@ -15,10 +15,12 @@ LOGS_DIR    = "log/"
 TEMP_DIR    = DATA_DIR + "temp/"
 OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API service root URI
 OD_BASE_URI = "https://scihub.copernicus.eu/dhus/odata/v1/" #OpenData   API service root URI
-S2_10_BANDS = ['AOT','B02','B03','B04','B08','TCI','WVP']
-S2_20_BANDS = ['AOT','B02','B03','B04','B05','B06','B07','B8A','B11','B12','SCL','TCI','WVP']
-S2_60_BANDS = ['AOT','B02','B03','B04','B05','B06','B07','B09','B8A','B11','B12','SCL','TCI','WVP']
-S2_BAND_IDS = ['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B8A','B9','B10','B11','B12']
+S2_BAND_IDX = ['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B8A','B9','B10','B11','B12']
+S2_BANDS    = [
+	'B02_10m','B03_10m','B04_10m','B08_10m','TCI_10m','AOT_10m','WVP_10m','B01_20m','B02_20m',
+	'B03_20m','B04_20m','B05_20m','B06_20m','B07_20m','B8A_20m','B11_20m','B12_20m','TCI_20m',
+	'AOT_20m','WVP_20m','SCL_20m','B01_60m','B02_60m','B03_60m','B04_60m','B05_60m','B06_60m',
+	'B07_60m','B8A_60m','B09_60m','B11_60m','B12_60m','TCI_60m','AOT_60m','WVP_60m','SCL_60m']
 
 #OpenSearch XML Namespaces
 NS = {'os':'http://a9.com/-/spec/opensearch/1.1/', 'other':'http://www.w3.org/2005/Atom'}
@@ -26,37 +28,20 @@ MTD_NS = {'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xs
 		  'other':"http://www.w3.org/2001/XMLSchema-instance",
 		  'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"}
 
-#temporary
+#temporary?
 USER = None 
 PASS = None
 
-####################################################################################################
-
-POINT   = "36.0537662 -114.7408903"
-POLYGON = "POLYGON((-120.41786863103002 42.17892002081763,-120.90811282563863 41.727878834703404,\
--120.41100158706399 41.38047598342979,-119.93717555340965 41.83884127148377,\
--120.41786863103002 42.17892002081763,-120.41786863103002 42.17892002081763))"
+#Search Defs
 PLATFORMNAME = "Sentinel-2"
 PRODUCT      = "S2MSI2A"
 START_TIME   = "2022-05-11T00:00:00.000Z"
 STOP_TIME    = "2023-05-11T23:59:59:999Z"
 RANGE_TIME   = "[%s TO %s]" % (START_TIME,STOP_TIME)
 CLOUD_PERCNT = "[0 TO 10]"
-BANDS        = ["B02","B03","B04","B08"] #---> fix to B02_10m, because need SCL_20m not SCL_60m
+BAND_RES     = ["B02_10m","B03_10m","B04_10m","B08_10m","SCL_20m"]
 
-####################################################################################################
-class Downloader():
-	def __init__(self):
-		self.coord_list = None
-		self.parameters = None
-		self.query      = None
-		self.session    = None
-
-	#set
-	#set
-	#get
-	#get
-	#etc
+# HELPERs
 ####################################################################################################
 def set_auth_from_env(env_user_str,env_pass_str):
 	ENV_USER = os.getenv(env_user_str)
@@ -211,8 +196,7 @@ def opensearch_parse_pages(S,query,params):
 
 def opensearch_parse(S,query,params):
 	'''
-	Iterate through all pages returned by OpenSearch query and parse them.
-	Returns a numpy array with the products' information.
+	Single-function version opensearch_parse_pages() above.
 	'''
 
 	#FIND NR OF PAGES TO PARSE
@@ -259,14 +243,15 @@ def opensearch_parse(S,query,params):
 
 # ODATA METADATA AND IMAGES
 ####################################################################################################
-def odata_image_uri(row,band,resolution):
+def odata_image_uri(row,band_res):
 	'''
 	Build and return the URI for a single SciHub image file. Input row in table follows the format:	
 	
 		[uuid,filename,waterpercentage,cloudcover,status,datastrip_id,granule_id]
 
 	'''
-	## do a check for incompatible band-res combos (global vars) -------------------------------TODO
+	# incompatible band-res combos
+	assert band_res in S2_BANDS, "odata_image_uri(): Bad band-resolution combination."
 
 
 	#get uri components from table info in a tidy way
@@ -278,7 +263,7 @@ def odata_image_uri(row,band,resolution):
 	granule   = row[6].split('_')[-3]
 	subdir    = "%s_%s_%s_%s" % (level,tile,granule,dstrip)
 	ingestion = filename.split('_')[2]
-	img_path  = "%s_%s_%s_%s.jp2" % (tile,ingestion,band,resolution)
+	img_path  = "%s_%s_%s.jp2" % (tile,ingestion,band_res)
 
 	#build the URI and return it
 	uri = OD_BASE_URI
@@ -287,7 +272,7 @@ def odata_image_uri(row,band,resolution):
 	uri += "Nodes('GRANULE')/"
 	uri += "Nodes('%s')/"       % subdir
 	uri += "Nodes('IMG_DATA')/"
-	uri += "Nodes('R%s')/"      % resolution
+	uri += "Nodes('R%s')/"      % band_res.split('_')[1]
 	uri += "Nodes('%s')/$value" % img_path
 	return uri
 
@@ -310,29 +295,30 @@ def odata_mtdxml_uri(row):
 	return uri
 
 
-def odata_get_image(S,uri):
+def odata_get_image(S,row,uri):
+
 	res   = S.get(uri,stream=True)
 	tsize = int(res.headers.get('content-length',0))
 	bsize = 1024
-	# opath = DATA_DIR + row[1]
 
-	#Check for metadata
-	subdir = DATA_DIR + row[1]
+	#Check for metadata file and subfolder
+	subdir = DATA_DIR + row[1] + '/'
 	if not os.path.isdir(subdir):
-		print("No %s subdirectory found." % subdir)
+		print("No %s/ subfolder found." % row[1])
 		return
 
-	out_path = 
+	img_path = subdir + uri.split('/')[-2].split('(')[1].rstrip(')')
 
 	bar = tqdm(total=tsize, unit='iB', unit_scale=True)
-	with open(out_path,'wb') as fp:	
+	with open(img_path,'wb') as fp:	
 		for chunk in res.iter_content(bsize):
 			bar.update(fp.write(chunk))
 	bar.close()
 
+	# Incorrect file size
 	if  tsize != 0 and bar.n != tsize:
 		print("Error. Incorrect file size during download.")
-		os.remove(out_file_path)
+		os.remove(img_path)
 
 def odata_get_mtdxml(S,row):
 	'''
@@ -470,7 +456,7 @@ def odata_get_status(S,product_list):
 	np.savetxt(DATA_DIR + 'online.txt', product_list[status_array],fmt='%s',delimiter='\t')
 	return product_list
 
-# LOAD MULTIPLE GEOMETRIES
+# SEARCH AND LOAD MULTIPLE GEOMETRIES
 ####################################################################################################
 def opensearch_coordinate_list(S,coords_path,params):
 	n_results    = 0
@@ -509,7 +495,7 @@ def opensearch_coordinate_list(S,coords_path,params):
 if __name__ == '__main__':
 
 	params = {
-		'coordinates': POINT,
+		'coordinates': "",
 		'platformname': PLATFORMNAME,
 		'producttype': PRODUCT,
 		'cloudcoverpercentage': CLOUD_PERCNT,
@@ -517,7 +503,7 @@ if __name__ == '__main__':
 		'endPosition:': RANGE_TIME,
 		'startdate': START_TIME,
 		'enddate': STOP_TIME,
-		'bands': BANDS
+		'bands': BAND_RES
 	}
 
 	#SET SESSION AUTH
@@ -544,17 +530,16 @@ if __name__ == '__main__':
 	online = np.append(online, np.array([datastrip_col,granule_col]).T, axis=1)
 	# online = np.append(online, np.column_stack((datastrip_col,granule_col)),axis=1)
 
-	pass
-
 	#Retrieve images -- Want B02_10m, B03_10m, B04_10m, B08_10m, SCL_20m
-	print("RETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
+	print("RETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
 	print('='*100)
 	for row in online:
-		for band in BANDS: #--ugly
-			uri = odata_image_uri(row,band,'10m')
+		for b in params['bands']:
+			uri = odata_image_uri(row,b)
 			print(uri)
 			# odata_get_image(S,uri)
 
+	pass
 
 
 
