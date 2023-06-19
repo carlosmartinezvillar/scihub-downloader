@@ -8,8 +8,13 @@ import subprocess
 import argparse
 from tqdm import tqdm
 import time
+from multiprocessing import Pool
 
-#Global variables for some restrictive parameters
+####################################################################################################
+# GLOBAL VARIABLES
+####################################################################################################
+
+#Some restrictive parameters
 DATA_DIR    = "dat/"
 LOGS_DIR    = "log/"
 TEMP_DIR    = DATA_DIR + "temp/"
@@ -28,21 +33,54 @@ MTD_NS = {'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xs
 		  'other':"http://www.w3.org/2001/XMLSchema-instance",
 		  'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"}
 
-#temporary?
+#For storing env locally -- temporary?
 USER = None 
 PASS = None
 
 #Search Defs
 PLATFORMNAME = "Sentinel-2"
 PRODUCT      = "S2MSI2A"
-START_TIME   = "2022-05-11T00:00:00.000Z"
-STOP_TIME    = "2023-05-11T23:59:59:999Z"
+START_TIME   = "2022-01-01T00:00:00.000Z"
+STOP_TIME    = "2023-06-01T23:59:59:999Z"
 RANGE_TIME   = "[%s TO %s]" % (START_TIME,STOP_TIME)
-CLOUD_PERCNT = "[0 TO 10]"
-BAND_RES     = ["B02_10m","B03_10m","B04_10m","B08_10m","SCL_20m"]
+CLOUD_PERCNT = "[0 TO 5]"
+BAND_RES     = ["SCL_20m","B02_10m","B03_10m","B04_10m","B08_10m"]
 
-# HELPERs
+
 ####################################################################################################
+# ARGV
+####################################################################################################
+parser = argparse.ArgumentParser()
+parser.add_argument('-f','--input-file',
+	help="txt file with offline results of a previous search",
+	action='store',
+	type=str,
+	metavar="<input_file>"
+	)
+parser.add_argument('-g','--geo_file',
+	help='txt file with a list of coordinates to be searched',
+	action='store',
+	type=str,
+	metavar='<geo_file>'
+	)
+
+####################################################################################################
+# HELPER FUNCTIONS
+####################################################################################################
+def load_table_and_reduce(path):
+	min_area = 50.0
+
+	with open('sites_table.csv') as fp:
+		arr = np.array([line.rstrip('\n').split(',') for line in fp.readlines()][1:])
+
+	area = arr2[:,2].astype(float)
+	large_enough = arr[area > min_area]
+	pass
+	np.savetxt('sites_small_table.csv',large_enough,fmt='%s',delimiter=',',newline='\n')
+	np.savetxt('sites_small.txt',large_enough[:,-2:],fmt='%s',delimeter=',',newline='\n')
+	print("File saved to sites_small_table.csv and sites_small.txt")
+
+
 def set_auth_from_env(env_user_str,env_pass_str):
 	ENV_USER = os.getenv(env_user_str)
 	ENV_PASS = os.getenv(env_pass_str)
@@ -52,7 +90,7 @@ def set_auth_from_env(env_user_str,env_pass_str):
 			global PASS
 			USER = ENV_USER
 			PASS = ENV_PASS
-			print("USER and PASS set to env variables.\n")
+			print("USER and PASS set to env variables.")
 		else:
 			print("Env variable given for password is not set.")
 	else:
@@ -77,12 +115,44 @@ def remove_duplicates(product_list):
 	'''
 	uuids,index,counts = np.unique(product_list[:,0],return_index=True,return_counts=True)
 	n_duplicates = product_list.shape[0] - len(uuids)
-	print("%i duplicates removed from original array of %i" %(n_duplicates,product_list.shape[0]))
+	print("%i duplicates found." %  n_duplicates) 
 	return product_list[index]
 
-
-# PARSE OPENSEARCH PAGE RESULTS
 ####################################################################################################
+# OPENSEARCH SEARCH, SET QUERY, PARSE PAGE RESULTS
+####################################################################################################
+def opensearch_coordinate_list(S,coords_path,params):
+	n_results    = 0
+	all_products = None
+
+	#LIST OF COORDS
+	coords = load_points_from_file(coords_path)
+
+	for i,c in enumerate(coords):
+		#UPDATE COORDS IN QUERY
+		params['coordinates'] = c
+		query     = opensearch_set_query(params)
+
+		#PARSE PAGES OF RESULTS
+		if i == 0:
+			all_products = opensearch_parse_pages(S,query,params)
+			if len(all_products.shape) == 1:
+				all_products = all_products.reshape((0,4))
+		else:
+			products = opensearch_parse_pages(S,query,params)
+			if len(products) > 0:
+				all_products = np.concatenate([all_products,products],axis=0)
+
+
+	n_results = all_products.shape[0]
+	print('-'*80)
+	print("Found %i products for %i geometries." % (n_results,len(coords)))
+	clean_products = remove_duplicates(all_products)
+	print('-'*80)
+
+	return clean_products
+
+
 def opensearch_set_query(params):
 	'''
 	Build the OpenSearch query 
@@ -148,12 +218,12 @@ def opensearch_parse_entry(xml_entry):
 
 	for d in xml_entry.findall('other:double',NS):
 		if d.attrib['name'] == 'waterpercentage':
-			waterpercentage = d.text
+			waterpercentage = str(round(float(d.text),6))
 
 		if d.attrib['name'] == 'cloudcoverpercentage':
-			cloudcoverpercentage = d.text
+			cloudpercentage = str(round(float(d.text),6))
 
-	return (uuid,filename,waterpercentage,cloudcoverpercentage)
+	return (uuid,filename,waterpercentage,cloudpercentage)
 
 
 def opensearch_parse_page(root):
@@ -181,7 +251,7 @@ def opensearch_parse_pages(S,query,params):
 	print("Parsing pages...\n")
 
 	for current_page in range(n_pages):
-		payload = {'start':current_page*100,'rows':100,'q':query}
+		payload = {'start':current_page*100,'rows':100,'q':query,'orderby':'beginPosition desc'}
 		resp    = S.get(OS_BASE_URI,params=payload)	
 		root    = ET.fromstring(resp.text)
 		page_results = opensearch_parse_page(root)
@@ -240,8 +310,8 @@ def opensearch_parse(S,query,params):
 
 	return np.array(entries)
 
-
-# ODATA METADATA AND IMAGES
+####################################################################################################
+# DOWNLOADS
 ####################################################################################################
 def odata_image_uri(row,band_res):
 	'''
@@ -285,32 +355,36 @@ def odata_mtdxml_uri(row):
 	uuid     = row[0]
 	filename = row[1]
 	level    = filename.split('_')[1][3:]
-	# tile     = filename.split('_')[-2]
 
 	#build and return
 	uri = OD_BASE_URI
-	uri += "Products('%s')/" % uuid
-	uri += "Nodes('%s')/" % filename
-	uri += "Nodes('MTD_MSI%s.xml')/$value" % level 
+	uri += "Products('%s')/Nodes('%s')/Nodes('MTD_MSI%s.xml')/$value" % (uuid,filename,level)
 	return uri
 
 
-def odata_get_image(S,row,uri):
+def odata_get_image_worker(S,folder,uri,t_id):
+
+	#Dir check -- metadata file and subfolder
+	subdir = DATA_DIR + folder + '/'
+	if not os.path.isdir(subdir):
+		print("No %s/ subfolder found." % row[1]) #PROBLEM -- metadata was not downloaded
+		return
+
+	img_path = subdir + uri.split('/')[-2].split('(')[1].rstrip(')').strip('\'')
+
+	#Dir check -- image file 
+	if os.path.isfile(img_path):  #------------------------------------------------> CHECK OVERWRITE
+		if os.path.getsize(img_path) > 10:
+			print("Non-empty file already in %s" % img_path)
+			return 
 
 	res   = S.get(uri,stream=True)
 	tsize = int(res.headers.get('content-length',0))
-	bsize = 1024
+	bsize = 65536
 
-	#Check for metadata file and subfolder
-	subdir = DATA_DIR + row[1] + '/'
-	if not os.path.isdir(subdir):
-		print("No %s/ subfolder found." % row[1])
-		return
-
-	img_path = subdir + uri.split('/')[-2].split('(')[1].rstrip(')')
-
-	bar = tqdm(total=tsize, unit='iB', unit_scale=True)
-	with open(img_path,'wb') as fp:	
+	bar = tqdm(total=tsize,unit='iB',leave=True,unit_scale=True,ncols=80,position=t_id,ascii=True,
+		delay=0.1)
+	with open(img_path,'wb') as fp:
 		for chunk in res.iter_content(bsize):
 			bar.update(fp.write(chunk))
 	bar.close()
@@ -320,7 +394,23 @@ def odata_get_image(S,row,uri):
 		print("Error. Incorrect file size during download.")
 		os.remove(img_path)
 
-def odata_get_mtdxml(S,row):
+
+def odata_get_image(S,online):
+	N = online.shape[0]
+
+	for row in online:
+		print("Downloading bands for product %s" % row[1])
+		with Pool(processes=5) as pool:
+			for i,b in enumerate(BAND_RES):
+				uri = odata_image_uri(row,b)
+				pool.apply_async(odata_get_image_worker,args=(S,row[1],uri,i))
+			pool.close()
+			pool.join()
+		append_tsv_row(DATA_DIR + 'downloaded.txt',row) #bands downloaded 
+		print("")
+
+
+def odata_get_mtdxml_worker(S,row,id):
 	'''
 	Assuming this format:
 		[uuid,filename,waterpercentage,cloudcover,status,datastrip_id,granule_id]	
@@ -330,32 +420,56 @@ def odata_get_mtdxml(S,row):
 	#if dir and mtd.xml --> do nothing
 	if os.path.isdir(DATA_DIR+row[1]) and os.path.isfile(out_file_path):
 		print("MTD.xml file found in %s/ subdir" % row[1])
-		return
+		return True
 
 	#Make dir with SciHub .SAFE file name
 	if not os.path.isdir(DATA_DIR + row[1]):
 		os.mkdir(DATA_DIR + row[1])
 
+	#Prepare download
 	uri  = odata_mtdxml_uri(row)
+	written = 0
 
-	#Download
-	resp = S.get(uri,stream=True)
-	total_size = int(resp.headers.get('content-length',0))
-	block_size = 1024
-	bar = tqdm(total=total_size, unit='iB',unit_scale=True)
-	with open(out_file_path,'wb') as fp:
-		for chunk in resp.iter_content(block_size):
-			written = fp.write(chunk)
-			bar.update(written)
-	bar.close()
+	try:
+		#Actual Download
+		resp = S.get(uri,stream=True)
+		total_size = int(resp.headers.get('content-length',0))
+		block_size = 8192
+
+		with open(out_file_path,'wb') as fp:
+			for chunk in resp.iter_content(block_size):
+				written += fp.write(chunk)
+
+	except:
+		#Some kinda error
+		print("odata_get_mtdxml_worker(): Error during download.")
+		os.rmdir(DATA_DIR + row[1])	
+		return False
 
 	#Error
-	if total_size != 0 and bar.n != total_size:
-		print("Error. Incorrect file size during download.")
-
+	if total_size!=written:
+		print("odata_get_mtdxml_worker(): Error. Incorrect file size during download.")
 		os.rmdir(DATA_DIR + row[1])
+		return False
 
-	print("Metadata file saved to %s" % out_file_path)
+	#Success
+	print("[%i] xml file saved to %s" % (id,out_file_path))
+	return True
+
+
+def odata_get_mtdxml(S,online_list):
+	n_threads = 4
+	N = online_list.shape[0]
+	i = np.arange(N)
+	Z = zip([S]*N,online_list,i)
+
+	start = time.time()
+	with Pool(processes=n_threads) as pool:
+		result = np.array(pool.starmap(odata_get_mtdxml_worker,Z))
+	end = time.time()
+	print("odata_get_mtdxml(): time - %s" % (end-start) )
+	print("%i/%i metadata files downloaded." % (result.sum(),N) )
+	return result
 
 
 def parse_mtdxml(row):
@@ -367,32 +481,33 @@ def parse_mtdxml(row):
 	# path chheck here before everything breaks in the next line
 	assert os.path.isfile(path), "No file found in path %s" % path
 
-	root         = ET.parse(path).getroot()
-	gral_info    = root.find('n1:General_Info',MTD_NS)
-	product_info = gral_info.find('Product_Info')
-	product_char = gral_info.find('Product_Image_Characteristics')
+	try:
+		print("Parsing %s" % path)
+		root         = ET.parse(path).getroot()
+		gral_info    = root.find('n1:General_Info',MTD_NS)
+		product_info = gral_info.find('Product_Info')
+		product_char = gral_info.find('Product_Image_Characteristics')
 
-	#INSIDE TAG <Product_Info> -- ALWAYS in XML
-	granule_attrib = list(product_info.iter('Granule'))[0].attrib
-	datastrip      = granule_attrib['datastripIdentifier']
-	granule        = granule_attrib['granuleIdentifier']
+		#INSIDE TAG <Product_Info> -- ALWAYS in XML
+		granule_attrib = list(product_info.iter('Granule'))[0].attrib
+		datastrip      = granule_attrib['datastripIdentifier']
+		granule        = granule_attrib['granuleIdentifier']
 
-	#INSIDE TAG <Product_Image_Characterstics> -- Nevermind
-	# "For a given DN in [1;2^15-1], the L2A BOA reflectance value will be: 
-	#	L2A_BOAi = (L2A_DNi + BOA_ADD_OFFSETi) / QUANTIFICATION_VALUEi "
-	# char.find('QUANTIFICATION_VALUES_LIST').find('BOA_QUANTIFICATION_VALUE').text
-	# quantval = list(product_char.iter('BOA_QUANTIFICATION_VALUE'))[0].text
-	# offsets  = product_char.find('BOA_ADD_OFFSET_VALUES_LIST')
-	# new_dict = {}
-	# if offsets is not None:
-	# 	for e in offsets:
-	# 		d = e.attrib
-	# 		d['']
-	# offsets  = [e for e in product_char.find('BOA_ADD_OFFSET_VALUES_LIST').iter()]
+	except:
+		print("Error parsing %s" % path)
+		return "-","-"
+
 	return datastrip, granule
 
-# DEAL W/ PRODUCT STATUS
-####################################################################################################
+
+def append_tsv_row(path,row):
+	# [uuid,filename,waterpercentage,cloudcover,status,datastrip_id,granule_id]	
+	n_cols = len(row)
+	fmt = '%s\t'*(n_cols-1) + '%s\n'
+	with open(path,'a') as fp:
+		fp.write(fmt % tuple(row))
+
+
 def odata_check_online(S,uri):
 	'''
 	Takes the given URI and sends request to check if product is currently online or 
@@ -404,21 +519,7 @@ def odata_check_online(S,uri):
 	return False
 
 
-def odata_trigger_offline_request(S,product_list):
-	for i,row in enumerate(product_list):
-		if i == 20: # -------------------------------------------------------------------------> FIX
-			break
-		uuid = row[0]
-		uri  = OD_BASE_URI + "Products('%s')/$value" % uuid
-
-		#HTTP header 202 means good
-		print("[%i/%i]" % (i,len(uuid)) ,end=" ")
-		print("Triggering offline request for product %s" % uuid, end=' -- ')
-		resp = S.get(uri)
-		print("http: %s" % resp.status_code)
-
-
-def odata_get_status(S,product_list):
+def get_status_single_thread(S,product_list):
 	status_list = []
 	N           = product_list.shape[0]
 
@@ -427,10 +528,10 @@ def odata_get_status(S,product_list):
 
 	#ITERATE THROUGH PRODUCTS AND REQUEST
 	for i,row in enumerate(product_list):
-		uuid = row[0]
-		uri  = OD_BASE_URI + "Products('%s')/Online/$value" % uuid
+		uri  = OD_BASE_URI + "Products('%s')/Online/$value" % row[0] #uuid
 		print("[%i/%i]" % (i+1,N),end=' ')
-		print(uuid, end=' -- ')
+		print(row[1], end=' -- ')
+
 		status = odata_check_online(S,uri) #returns bool
 
 		if status:
@@ -440,59 +541,85 @@ def odata_get_status(S,product_list):
 
 		status_list.append(status)
 	
-	#NumPy for bool ops in whole array
+	#NumPy for bool ops with whole array
 	status_array = np.array(status_list)
 	print("\n%i/%i products offline\n" % ((~status_array).sum(), N) )
 
 	#Whole array is string so set new column as str flag
-	product_list = np.append(product_list, np.array(['?']*N).reshape((N,1)),axis=1)
-	product_list[status_array,-1]  = 'online'
-	product_list[~status_array,-1] = 'offline'
+	# product_list = np.append(product_list, np.array(['?']*N).reshape((N,1)),axis=1)
+	# product_list[status_array,-1]  = 'online'
+	# product_list[~status_array,-1] = 'offline'
 	
 	#Save array into .tsv file for later re-call
-	print("Writing list of offline products to %s." % DATA_DIR + "offline.txt" )
-	np.savetxt(DATA_DIR + 'offline.txt', product_list[~status_array],fmt='%s',delimiter='\t')
-	print("Writing list of online products to %s." % DATA_DIR + "online.txt" )
-	np.savetxt(DATA_DIR + 'online.txt', product_list[status_array],fmt='%s',delimiter='\t')
-	return product_list
-
-# SEARCH AND LOAD MULTIPLE GEOMETRIES
-####################################################################################################
-def opensearch_coordinate_list(S,coords_path,params):
-	n_results    = 0
-	all_products = None
-
-	#LIST OF COORDS
-	coords = load_points_from_file(coords_path)[0:2] #--------------------------------------> REMOVE
-
-	for i,c in enumerate(coords):
-		#UPDATE COORDS IN QUERY
-		params['coordinates'] = c
-		query     = opensearch_set_query(params)
-
-		#PARSE PAGES OF RESULTS
-		if i == 0:
-			all_products = opensearch_parse_pages(S,query,params)
-			if len(all_products.shape) == 1:
-				all_products = all_products.reshape((0,4))
-		else:
-			products = opensearch_parse_pages(S,query,params)
-			if len(products) > 0:
-				all_products = np.concatenate([all_products,products],axis=0)
+	# print("Writing list of offline products to %s." % DATA_DIR + "offline.txt" )
+	# np.savetxt(DATA_DIR + 'offline.txt', product_list[~status_array],fmt='%s',delimiter='\t')
+	# print("Writing list of online products to %s." % DATA_DIR + "online.txt" )
+	# np.savetxt(DATA_DIR + 'online.txt', product_list[status_array],fmt='%s',delimiter='\t')
+	# return product_list
+	return status_array
 
 
-	n_results = all_products.shape[0]
-	print('-'*80)
-	print("Found %i products for %i geometries." % (n_results,len(coords)))
-	clean_products = remove_duplicates(all_products)
-	print('-'*80)
+def get_status_worker(S,idx,N,row):
+	uri = OD_BASE_URI + "Products('%s')/Online/$value" % row[0]
+	print("[%i/%i]" % (idx+1,N),end=' ')
+	print(row[1], end=' -- ')
+	resp = S.get(uri)
+	if resp.text == 'true':
+		print('online')
+		status = 'online'
+	else:
+		print('offline')
+		status = 'offline'
 
-	return clean_products
+	return status
+
+
+def get_status(S,product_list):
+	print("\nChecking Online/Offline status of products...")
+	print("="*100)
+
+	idxs   = [*range(product_list.shape[0])]
+	N      = len(idxs)
+	Z      = zip([S]*N,idxs,[N]*N,product_list)
+
+	start = time.time()
+	with Pool(processes=8) as pool:
+		statuses = np.array(pool.starmap(get_status_worker,Z,chunksize=1))
+	end   = time.time()
+	print("get_status(): time - %f" % (end-start) )
+	print("\n%s/%s products offline" % ((statuses=='offline').sum(),N))
+	return statuses
+
+
+def trigger_offline_multiple(S,product_list):
+	
+	for i,row in enumerate(product_list):
+		#20 requests max -- 
+		if i == 20:
+			break
+
+		uuid = row[0]
+		uri  = OD_BASE_URI + "Products('%s')/$value" % uuid
+
+		#HTTP header 202 means good
+		print("[%i/%i]" % (i+1,product_list.shape[0]),end=" ")
+		print("Triggering offline request for %s" % row[1], end=' -- ')
+		resp = S.get(uri)
+		print("http: %s" % resp.status_code)
+
+
+def trigger_offline_single(S,row):
+	uri = OD_BASE_URI + "Products('%s')/$value" % row[0]
+	print("Triggering retrieval of %s -- " % row[0], end='')
+	resp = S.get(uri)
+	print("http: %s" % resp.status_code)
 
 ####################################################################################################
 # MAIN
 ####################################################################################################
 if __name__ == '__main__':
+
+	__spec__ = None #TEMP
 
 	params = {
 		'coordinates': "",
@@ -506,40 +633,110 @@ if __name__ == '__main__':
 		'bands': BAND_RES
 	}
 
-	#SET SESSION AUTH
+	args = parser.parse_args()
+
+	# SET SESSION AUTH
+	# ----------------------------------------
 	set_auth_from_env('DHUS_USER','DHUS_PASS')
 	S      = requests.Session()
 	S.auth = (USER,PASS)
 
-	#Search from geometries, check status, separate online v offline
-	arr = opensearch_coordinate_list(S,'test_sites.txt', params)
-	arr = odata_get_status(S, arr)
-	online = arr[arr[:,4]=='online'][0:3] #-------------------------------------------------->REMOVE
 
-	#Retrieve metadata files
-	print("RETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
-	print('='*100)
+	if args.input_file is None:
 
-	datastrip_col, granule_col = [],[]
-	
-	for row in online:
-		odata_get_mtdxml(S,row)
-		datastrip, granule = parse_mtdxml(row)
-		datastrip_col.append(datastrip)
-		granule_col.append(granule)
-	online = np.append(online, np.array([datastrip_col,granule_col]).T, axis=1)
-	# online = np.append(online, np.column_stack((datastrip_col,granule_col)),axis=1)
+		# CHECK COORDINATES FILE IS CORRECT
+		geo_file = args.geo_file
+		assert geo_file is not None and os.path.isfile(geo_file), "No %s geo file found." % geo_file 
 
-	#Retrieve images -- Want B02_10m, B03_10m, B04_10m, B08_10m, SCL_20m
-	print("RETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
-	print('='*100)
-	for row in online:
-		for b in params['bands']:
-			uri = odata_image_uri(row,b)
-			print(uri)
-			# odata_get_image(S,uri)
+		# I.SEARCH FROM GEOMETRIES, CHECK ON/OFFLINE
+		# ----------------------------------------	
+		# a. search
+		print("="*100)
+		print("\nSEARCHING FOR PRODUCTS IN %s" % geo_file)
+		print("="*100)
+		results = opensearch_coordinate_list(S,geo_file,params)
 
-	pass
+		# b. Latest status
+		status  = get_status(S,results)
+		current = np.append(results,status.reshape((results.shape[0],1)),axis=1)
+		online  = current[status=='online']
+		offline = current[status=='offline']
 
+		# c. Store online and offline lists
+		np.savetxt(DATA_DIR + 'offline.txt', offline,fmt='%s',delimiter='\t')
+		print("List of offline products written to %s" % DATA_DIR+"offline.txt" )
+		np.savetxt(DATA_DIR + 'online.txt',online,fmt='%s',delimiter='\t')
+		print("List of online products to %s" % DATA_DIR+"online.txt" )
 
+	else:
+
+		# CHECK INPUT FILE IS CORRECT	
+		assert os.path.isfile(args.input_file), "%s not found." % args.input_file
+
+		# I.RELOAD PREVIOUS STATE FROM OFFLINE LOG
+		# ----------------------------------------
+		# a. load		
+		print("="*100)
+		print("--> RETRIEVING LIST FROM %s" % args.input_file)		
+		print("="*100)
+		results = np.loadtxt(args.input_file,dtype=str)
+
+		# b. Latest status
+		status  = get_status(S,results)
+		current = np.append(results[:,0:-1],status.reshape((results.shape[0],1)),axis=1)
+		online  = current[status=='online']
+		offline = current[status=='offline']
+
+		# c. Status feedback
+		updated = ((results[:,-1]=='offline') & (status=='online')).sum()
+		print("%i products previously offline now available.\n" % updated)
+
+	online = online[0:2] #--------------------------------------------------------------------> yea
+
+	# Online files?
+	if len(online) > 0:
+
+		# II.RETRIEVE METADATA FILES -- ONLINE
+		# ----------------------------------------
+		print("\nRETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
+		print('='*100)
+		mtd_down = odata_get_mtdxml(S,online) #bool list of downloaded xml's
+
+		# III. PARSE METADATA FILES -- ONLINE
+		# ----------------------------------------
+		datastrip_col,granule_col = [],[]		
+		for i,row in enumerate(online[mtd_down]):
+			try:
+				d,g = parse_mtdxml(row)
+				datastrip_col.append(d)
+				granule_col.append(g)
+			except:
+				print("%s cannot be parsed. Removing it." % (DATA_DIR + row[1] + '/MTD.xml'))
+				append_tsv_row(DATA_DIR+'error.txt',row)
+				os.remove(DATA_DIR+row[1]+'/MTD.xml')
+				os.rmdir(DATA_DIR+row[1])
+				datastrip_col.append('-')
+				granule_col.append('-')
+
+		online_clean = np.append(online[mtd_down], np.array([datastrip_col,granule_col]).T, axis=1)
+		online_final = online_clean[online_clean[:,-1]!='-']
+
+		# log missing xml's
+		for row in online[~mtd_down]:
+			append_tsv_row('./dat/error.txt',row)
+
+		for row in online_clean[online_clean[:,-1]=='-']:
+			append_tsv_row('./dat/error.txt',row)
+
+		# III.RETRIEVE IMAGES -- ONLINE
+		# ----------------------------------------	
+		print("\nRETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
+		print('='*100)
+		odata_get_image(S,online_final)
+
+	# IV.TRIGGER REQUEST FOR SOME (20) PRODUCTS AND EXIT
+	# ----------------------------------------	
+	print("\nTRIGGERING RETRIEVAL OF (20) OFFLINE PRODUCTS...")
+	print("="*100)
+	trigger_offline_multiple(S,offline)
 
