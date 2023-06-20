@@ -15,7 +15,8 @@ from multiprocessing import Pool
 ####################################################################################################
 
 #Some restrictive parameters
-DATA_DIR    = "dat/"
+# DATA_DIR    = "/dat/"
+DATA_DIR    = os.getenv('DATA_DIR')
 LOGS_DIR    = "log/"
 TEMP_DIR    = DATA_DIR + "temp/"
 OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API service root URI
@@ -691,7 +692,7 @@ if __name__ == '__main__':
 		updated = ((results[:,-1]=='offline') & (status=='online')).sum()
 		print("%i products previously offline now available.\n" % updated)
 
-	online = online[0:2] #--------------------------------------------------------------------> yea
+	# online = online[0:2] #---------------------------------------------------------------> yea, no
 
 	# Online files?
 	if len(online) > 0:
