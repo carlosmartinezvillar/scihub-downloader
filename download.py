@@ -477,7 +477,7 @@ def parse_mtdxml(row):
 	'''
 	Get datastrip id and granule id from MTD_MSI
 	'''
-	path = './dat/' + row[1] + '/MTD.xml'
+	path = DATA_DIR + row[1] + '/MTD.xml'
 
 	# path chheck here before everything breaks in the next line
 	assert os.path.isfile(path), "No file found in path %s" % path
@@ -724,10 +724,10 @@ if __name__ == '__main__':
 
 		# log missing xml's
 		for row in online[~mtd_down]:
-			append_tsv_row('./dat/error.txt',row)
+			append_tsv_row(DATA_DIR+'error.txt',row)
 
 		for row in online_clean[online_clean[:,-1]=='-']:
-			append_tsv_row('./dat/error.txt',row)
+			append_tsv_row(DATA_DIR+'error.txt',row)
 
 		# III.RETRIEVE IMAGES -- ONLINE
 		# ----------------------------------------	
