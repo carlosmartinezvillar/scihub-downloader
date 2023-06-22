@@ -709,7 +709,7 @@ if __name__ == '__main__':
 			append_tsv_row(DATA_DIR+'error.txt',row)
 
 		for row in online_clean[online_clean[:,-1]=='-']:
-			append_tsv_row(DATA_DIR+'error.txt',row)
+			append_tsv_row(DATA_DIR+'error.txt',row)git
 
 		# IV.RETRIEVE IMAGES -- ONLINE
 		# ----------------------------------------	
