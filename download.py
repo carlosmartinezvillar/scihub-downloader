@@ -685,7 +685,7 @@ if __name__ == '__main__':
 		print("\nChecking Online/Offline status of products...")
 		print("-"*80)		
 		status  = get_status(S,results)
-		current = np.append(results[:,0:5],status.reshape((results.shape[0],1)),axis=1)
+		current = np.append(results[:,0:-1],status.reshape((results.shape[0],1)),axis=1)
 		online  = current[status=='online']
 		offline = current[status=='offline']
 
