@@ -17,8 +17,8 @@ producttype:          "S2MSI2A"
 platformname:         "Sentinel-2"
 
 #yyyy-MM-ddThh:mm:ss.SSSZ (ISO8601 format) ex: 2016-10-02T06:00:00.000Z
-starttime:            "2023-06-01T00:00:00.000Z"
-stoptime:             "2023-06-02T23:59:59:999Z"
+startdate:            "2023-06-01T00:00:00.000Z"
+enddate:              "2023-06-02T23:59:59:999Z"
 
 cloudcoverpercentage: "[0 TO 5]"
 

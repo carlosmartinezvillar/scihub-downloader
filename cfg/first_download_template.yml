@@ -36,8 +36,8 @@ spec:
               cpu: 8
 
           volumeMounts:
-          - mountPath: /dat
-            name: s2-data
+          - mountPath: /data
+            name: <vol-name>
 
           command: ["/bin/bash","-c"]
           args:
@@ -47,6 +47,6 @@ spec:
 
       #pvc vol
       volumes:
-        - name: s2-data
+        - name: <vol-name>
           persistentVolumeClaim:
-            claimName: s2-lakes-pvc
+            claimName: <the-actual-pvc-name>
