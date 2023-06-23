@@ -587,7 +587,8 @@ def get_status(S,product_list):
 
 	print("get_status(): time - %f" % (end-start) )
 	statuses = np.array(statuses)
-	print("\n%s/%s products offline" % ((statuses=='offline').sum(),N))
+	if statuses.shape[0] > 0:
+		print("\n%s/%s products offline" % ((statuses=='offline').sum(),N))
 	return statuses
 
 
@@ -693,8 +694,8 @@ if __name__ == '__main__':
 		updated = ((results[:,-1]=='offline') & (status=='online')).sum()
 		print("%i products previously offline now available.\n" % updated)
 
-		np.savetxt(DATA_DIR + 'offline.tsv', offline,fmt='%s',delimiter='\t')
-		print("Updating offline products in %s" % DATA_DIR+"offline.tsv" )	
+		# np.savetxt(DATA_DIR + 'offline.tsv', offline,fmt='%s',delimiter='\t')
+		# print("Updating offline products in %s" % DATA_DIR+"offline.tsv" )	
 
 
 	# Online files?
@@ -702,12 +703,14 @@ if __name__ == '__main__':
 		print("No online products left to download. Exiting.")
 		sys.exit(0)
 
+
 	# II.RETRIEVE METADATA FILES -- ONLINE
 	# ----------------------------------------
 	print('\n' + "="*100)
 	print("RETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
 	print('='*100)
 	mtd_down = odata_get_xmls(S,online) #bool numpy.array of downloaded xmls
+
 
 	# III. PARSE METADATA FILES -- ONLINE
 	# ----------------------------------------
@@ -732,7 +735,10 @@ if __name__ == '__main__':
 
 	# log missing xml's
 	for row in online_filed[online_filed[:,-1]=='-']:
-		append_tsv_row(DATA_DIR+'error.tsv',row)
+		append_tsv_row(DATA_DIR+'error.tsv',row[0:-2])
+	errors_file = np.loadtxt(DATA_DIR+'error.tsv',dtype=str)
+	np.savetxt(DATA_DIR+'error.tsv',remove_duplicates(errors_file),fmt='%s',delimiter='\t')
+
 
 	# IV.RETRIEVE IMAGES -- ONLINE
 	# ----------------------------------------	
@@ -740,6 +746,7 @@ if __name__ == '__main__':
 	print("RETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
 	print('='*100)
 	odata_get_images(S,online_clean)
+
 
 	# V.TRIGGER REQUEST FOR SOME (20) PRODUCTS AND EXIT
 	# ----------------------------------------
