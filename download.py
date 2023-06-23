@@ -6,6 +6,7 @@ import argparse
 from tqdm import tqdm
 import time
 from multiprocessing import Pool
+import sys
 
 ####################################################################################################
 # GLOBAL VARIABLES
