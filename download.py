@@ -10,11 +10,9 @@ from multiprocessing import Pool
 ####################################################################################################
 # GLOBAL VARIABLES
 ####################################################################################################
-
 #Some restrictive parameters
-# DATA_DIR    = "/dat/"
 DATA_DIR    = os.getenv('DATA_DIR')
-LOGS_DIR    = "log/"
+LOGS_DIR    = "./log/"
 TEMP_DIR    = DATA_DIR + "temp/"
 OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API service root URI
 OD_BASE_URI = "https://scihub.copernicus.eu/dhus/odata/v1/" #OpenData   API service root URI
@@ -50,7 +48,7 @@ BAND_RES     = ["SCL_20m","B02_10m","B03_10m","B04_10m","B08_10m"]
 ####################################################################################################
 parser = argparse.ArgumentParser()
 parser.add_argument('-f','--input-file',
-	help="txt file with offline results of a previous search",
+	help="use a tsv file with results of a previous search instead of a set of coordinates.",
 	action='store',
 	type=str,
 	metavar="<input_file>"
@@ -357,141 +355,155 @@ def odata_mtdxml_uri(row):
 	return uri
 
 
-def odata_get_image_worker(S,folder,uri,t_id):
+def odata_get_images_worker(S,folder,uri,thread_id):
 
-	#Dir check -- metadata file and subfolder
-	subdir = DATA_DIR + folder + '/'
-	if not os.path.isdir(subdir):
-		print("No %s/ subfolder found." % row[1]) #PROBLEM -- metadata was not downloaded
-		return
-
+	#IMAGE PATH in .SAFE SUBDIR
 	img_path = subdir + uri.split('/')[-2].split('(')[1].rstrip(')').strip('\'')
 
-	#Dir check -- image file 
-	if os.path.isfile(img_path):  #------------------------------------------------> CHECK OVERWRITE
-		if os.path.getsize(img_path) > 10:
-			print("Non-empty file already in %s" % img_path)
-			return 
+	#DIR CHECK
+	if os.path.isfile(img_path):
+		if os.path.getsize(img_path) == 0: #FILE SIZE 0?
+			os.remove(img_path) #REMOVE FILE
+		else:
+			print("Found non-empty file %s. Skipping." % img_path) #FILE GOOD!
+			return
 
+	#DOWNLOAD
 	res   = S.get(uri,stream=True)
 	tsize = int(res.headers.get('content-length',0))
 	bsize = 65536
-
-	bar = tqdm(total=tsize,unit='iB',leave=True,unit_scale=True,ncols=80,position=t_id,ascii=True,
-		delay=0.1)
+	bar = tqdm(total=tsize,unit='iB',leave=True,unit_scale=True,ncols=80,position=thread_id,
+		ascii=True,delay=0.2)
 	with open(img_path,'wb') as fp:
 		for chunk in res.iter_content(bsize):
 			bar.update(fp.write(chunk))
 	bar.close()
-
-	# Incorrect file size
+ 
+	#INCORRECT FILE SIZE
 	if  tsize != 0 and bar.n != tsize:
 		print("Error. Incorrect file size during download.")
-		os.remove(img_path)
+		if os.path.file(img_path):
+			os.remove(img_path)
 
 
-def odata_get_image(S,online):
-	N = online.shape[0]
+def odata_get_images(S,online):
 
 	for row in online:
-		print("Downloading bands for product %s" % row[1],flush=True)
-		with Pool(processes=5) as pool:
+
+		#The subir path for all bands in row product
+		subdir = DATA_DIR + row[1]+ '/'
+
+		# if not os.path.isdir(subdir):  #DIR PROBLEM -- xml not downloaded	
+		# 	print("odata_get_image(): No %s/ subfolder found." % row[1])
+		# 	append_tsv_row(DATA_DIR+'error.tsv',row)
+		# else: 
+
+		if os.path.isdir(subdir) and os.path.isfile(subdir + 'MTD.xml'):
+			print("\nDownloading bands for product %s" % row[1],flush=True)
+			pool =  Pool(processes=len(BAND_RES))
 			for i,b in enumerate(BAND_RES):
 				uri = odata_image_uri(row,b)
-				pool.apply_async(odata_get_image_worker,args=(S,row[1],uri,i))
+				pool.apply_async(odata_get_images_worker,args=(S,row[1],uri,i))
 			pool.close()
 			pool.join()
-		append_tsv_row(DATA_DIR + 'downloaded.tsv',row) #bands downloaded 
-		print("",flush=True)
+			append_tsv_row(DATA_DIR + 'downloaded.tsv',row) #success
 
 
-def odata_get_mtdxml_worker(S,row,id):
-	'''
-	Assuming this format:
-		[uuid,filename,waterpercentage,cloudcover,status,datastrip_id,granule_id]	
-	'''
-	out_file_path = "%s%s/MTD.xml" % (DATA_DIR, row[1])
+def odata_get_xmls_worker(S,row,id):
+	#row format: [uuid,filename,waterpercentage,cloudcover,status,datastrip_id,granule_id]
+	out_path = DATA_DIR + row[1] + "/MTD.xml"
 
-	#if dir and mtd.xml --> do nothing
-	if os.path.isdir(DATA_DIR+row[1]) and os.path.isfile(out_file_path):
-		print("%s already exists" % out_file_path)
-		return True
-
-	#Make dir with SciHub .SAFE file name
+	#IF NOT .SAFE DIR, os.mkdir()
 	if not os.path.isdir(DATA_DIR + row[1]):
 		os.mkdir(DATA_DIR + row[1])
 
+	#if dir and mtd.xml, do nothing
+	if os.path.isfile(out_path):
+		if os.path.getsize(out_path) == 0:
+			os.remove(out_path)
+		else:
+			# <--- check file is bad hier?
+			print("Non-empty file already in %s" % out_path)
+			return True
+
 	#Prepare download
-	uri  = odata_mtdxml_uri(row)
+	uri     = odata_mtdxml_uri(row)
 	written = 0
 
 	#Download
 	try:
 		resp = S.get(uri,stream=True)
 		total_size = int(resp.headers.get('content-length',0))
-		block_size = 8192
-		with open(out_file_path,'wb') as fp:
+		block_size = 2048
+		with open(out_path,'wb') as fp:
 			for chunk in resp.iter_content(block_size):
 				written += fp.write(chunk)
-	except:
-		#Unknown error
+	except: #Unknown err
 		print("odata_get_mtdxml_worker(): Error during download.")
-		if os.path.isfile(out_file_path):
-			os.remove(out_file_path)
+		if os.path.isfile(out_path):
+			os.remove(out_path)
 		os.rmdir(DATA_DIR + row[1])
 		return False
 
-	#Error
-	if total_size!=written:
+	#Incomplete Error
+	if total_size != written:
 		print("odata_get_mtdxml_worker(): Error. Incorrect file size during download.")
-		os.remove(out_file_path)
+		os.remove(out_path)
 		os.rmdir(DATA_DIR + row[1])
 		return False
 
 	#Success
-	print("[%i] xml file saved to %s" % (id,out_file_path))
+	print("[%i] xml file saved to %s" % (id,out_path))
 	return True
 
 
-def odata_get_mtdxml(S,online_list):
-	n_threads = 4
-	N = online_list.shape[0]
-	i = np.arange(N)
-	Z = zip([S]*N,online_list,i)
+def odata_get_xmls(S,online):
+	N = online.shape[0]
+	Z = zip([S]*N, online, range(N))
 
 	start = time.time()
-	with Pool(processes=n_threads) as pool:
-		result = np.array(pool.starmap(odata_get_mtdxml_worker,Z))
+	with Pool(processes=8) as pool:
+		result = pool.starmap(odata_get_xmls_worker,Z)
 	end = time.time()
-	print("odata_get_mtdxml(): time - %s" % (end-start) )
+	
+	result = np.array(result)
+	print("odata_get_mtdxml(): time - %s" % (end-start))
 	print("%i/%i metadata files downloaded." % (result.sum(),N) )
 	return result
 
 
-def parse_mtdxml(row):
-	'''
-	Get datastrip id and granule id from MTD_MSI
-	'''
-	path = DATA_DIR + row[1] + '/MTD.xml'
+def parse_xml(row):
+	"""
+	Get datastrip and granule id's from the xml metadata file corresponding to row.
 
-	# path chheck here before everything breaks in the next line
+	Parameters
+	----------
+	row : numpy.array
+		The row in the array of products.
+
+	Returns
+	-------
+	datastrip: str
+		Extracted datastrip id.
+
+	granule : str
+		Extracted granule id.
+
+	"""
+	path = DATA_DIR + row[1] + '/MTD.xml'
+	print("Parsing %s..." % path)
+
+	# if this throws AssertError something's very wrong...
 	assert os.path.isfile(path), "No file found in path %s" % path
 
-	try:
-		print("Parsing %s" % path)
-		root         = ET.parse(path).getroot()
-		gral_info    = root.find('n1:General_Info',MTD_NS)
-		product_info = gral_info.find('Product_Info')
-		product_char = gral_info.find('Product_Image_Characteristics')
-
-		#INSIDE TAG <Product_Info> -- ALWAYS in XML
-		granule_attrib = list(product_info.iter('Granule'))[0].attrib
-		datastrip      = granule_attrib['datastripIdentifier']
-		granule        = granule_attrib['granuleIdentifier']
-
-	except:
-		print("parse_mtdxml() Error parsing %s" % path)
-		return "-","-"
+	root         = ET.parse(path).getroot()
+	gral_info    = root.find('n1:General_Info',MTD_NS)
+	product_info = gral_info.find('Product_Info')
+	product_char = gral_info.find('Product_Image_Characteristics')
+	#INSIDE TAG <Product_Info> -- ALWAYS in XML
+	granule_attrib = list(product_info.iter('Granule'))[0].attrib
+	datastrip      = granule_attrib['datastripIdentifier']
+	granule        = granule_attrib['granuleIdentifier']
 
 	return datastrip, granule
 
@@ -559,18 +571,17 @@ def get_status_worker(S,idx,N,row):
 
 
 def get_status(S,product_list):
-	print("\nChecking Online/Offline status of products...")
-	print("="*100)
-
-	idxs   = [*range(product_list.shape[0])]
-	N      = len(idxs)
-	Z      = zip([S]*N,idxs,[N]*N,product_list)
+	idxs = [*range(product_list.shape[0])]
+	N    = len(idxs)
+	Z    = zip([S]*N,idxs,[N]*N,product_list)
 
 	start = time.time()
 	with Pool(processes=8) as pool:
-		statuses = np.array(pool.starmap(get_status_worker,Z,chunksize=1))
+		statuses = pool.starmap(get_status_worker,Z,chunksize=1)
 	end   = time.time()
+
 	print("get_status(): time - %f" % (end-start) )
+	statuses = np.array(statuses)
 	print("\n%s/%s products offline" % ((statuses=='offline').sum(),N))
 	return statuses
 
@@ -603,7 +614,7 @@ def trigger_offline_single(S,row):
 ####################################################################################################
 if __name__ == '__main__':
 
-	__spec__ = None #TEMP
+	# __spec__ = None #TEMP for pdb multithreaded
 
 	params = {
 		'coordinates': "",
@@ -627,7 +638,6 @@ if __name__ == '__main__':
 
 
 	if args.input_file is None:
-
 		# CHECK COORDINATES FILE IS CORRECT
 		assert args.geo_file is not None, "In main: args.geo_file is None."
 		assert os.path.isfile(args.geo_file), "In main: no %s geo file found." % args.geo_file 
@@ -635,12 +645,14 @@ if __name__ == '__main__':
 		# I.SEARCH FROM GEOMETRIES, CHECK ON/OFFLINE
 		# ----------------------------------------	
 		# a. search
-		print("="*100)
-		print("\nSEARCHING FOR PRODUCTS IN %s" % geo_file)
+		print('\n' + "="*100)
+		print("--> SEARCHING FOR PRODUCTS IN %s" % geo_file)
 		print("="*100)
 		results = opensearch_coordinate_list(S,geo_file,params)
 
 		# b. Latest status
+		print("\nChecking Online/Offline status of products...")
+		print("="*100)
 		status  = get_status(S,results)
 		current = np.append(results,status.reshape((results.shape[0],1)),axis=1)
 		online  = current[status=='online']
@@ -648,12 +660,11 @@ if __name__ == '__main__':
 
 		# c. Store online and offline lists
 		np.savetxt(DATA_DIR + 'offline.tsv', offline,fmt='%s',delimiter='\t')
-		print("List of offline products written to %s" % DATA_DIR+"offline.txt" )
+		print("List of offline products written to %s" % DATA_DIR+"offline.tsv" )
 		np.savetxt(DATA_DIR + 'online.tsv',online,fmt='%s',delimiter='\t')
-		print("List of online products to %s" % DATA_DIR+"online.txt" )
+		print("List of online products to %s" % DATA_DIR+"online.tsv" )
 
 	else:
-
 		# CHECK INPUT FILE IS CORRECT	
 		assert os.path.isfile(args.input_file), "%s not found." % args.input_file
 
@@ -666,6 +677,8 @@ if __name__ == '__main__':
 		results = np.loadtxt(args.input_file,dtype=str)
 
 		# b. Latest status
+		print("\nChecking Online/Offline status of products...")
+		print("-"*80)		
 		status  = get_status(S,results)
 		current = np.append(results[:,0:-1],status.reshape((results.shape[0],1)),axis=1)
 		online  = current[status=='online']
@@ -676,50 +689,53 @@ if __name__ == '__main__':
 		print("%i products previously offline now available.\n" % updated)
 
 	# Online files?
-	if len(online) > 0:
+	if len(online) <= 0:
+		print("No online products left to download. Exiting.")
+		sys.exit(0)
 
-		# II.RETRIEVE METADATA FILES -- ONLINE
-		# ----------------------------------------
-		print("\nRETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
-		print('='*100)
-		mtd_down = odata_get_mtdxml(S,online) #bool list of downloaded xml's
+	# II.RETRIEVE METADATA FILES -- ONLINE
+	# ----------------------------------------
+	print('\n' + "="*100)
+	print("RETRIEVING METADATA FILES FOR ONLINE PRODUCTS...")
+	print('='*100)
+	mtd_down = odata_get_xmls(S,online) #bool numpy.array of downloaded xmls
 
-		# III. PARSE METADATA FILES -- ONLINE
-		# ----------------------------------------
-		datastrip_col,granule_col = [],[]		
-		for i,row in enumerate(online[mtd_down]):
+	# III. PARSE METADATA FILES -- ONLINE
+	# ----------------------------------------
+	datastrip_col,granule_col = [],[]		
+	for i,row in enumerate(online):
+		folder = DATA_DIR + row[1] + '/'
+		if not os.path.isfile(folder+"MTD.xml"): # NO FILE ERROR
+			print("No file %s" % (folder+"MTD.xml"))
+			d,g = '-','-'
+		else:
 			try:
-				d,g = parse_mtdxml(row)
-				datastrip_col.append(d)
-				granule_col.append(g)
-			except:
-				print("%s cannot be parsed. Removing it." % (DATA_DIR + row[1] + '/MTD.xml'))
-				append_tsv_row(DATA_DIR+'error.txt',row)
-				for file in os.listdir(DATA_DIR + row[1]):
-					os.remove(file)
-				os.rmdir(DATA_DIR+row[1]) #ERROR HERE when not empty
-				datastrip_col.append('-')
-				granule_col.append('-')
+				d,g = parse_xml(row)
+			except: #XML PARSE ERROR
+				print("%s can't be parsed. Removing it.." % (DATA_DIR+row[1]+'/MTD.xml'))
+				os.remove(folder+"MTD.xml")		
+				d,g = '-','-'
+		datastrip_col.append(d)
+		granule_col.append(g)
 
-		online_clean = np.append(online[mtd_down], np.array([datastrip_col,granule_col]).T, axis=1)
-		online_final = online_clean[online_clean[:,-1]!='-']
+	online_filed = np.append(online, np.array([datastrip_col,granule_col]).T, axis=1)
+	online_clean = online_filed[online_filed[:,-1]!='-']
 
-		# log missing xml's
-		for row in online[~mtd_down]:
-			append_tsv_row(DATA_DIR+'error.txt',row)
+	# log missing xml's
+	for row in online_filed[online_filed[:,-1]=='-']:
+		append_tsv_row(DATA_DIR+'error.tsv',row)
 
-		for row in online_clean[online_clean[:,-1]=='-']:
-			append_tsv_row(DATA_DIR+'error.txt',row)git
-
-		# IV.RETRIEVE IMAGES -- ONLINE
-		# ----------------------------------------	
-		print("\nRETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
-		print('='*100)
-		odata_get_image(S,online_final)
+	# IV.RETRIEVE IMAGES -- ONLINE
+	# ----------------------------------------	
+	print('\n' + "="*100)		
+	print("RETRIEVING BAND FILES FOR ONLINE PRODUCTS...")
+	print('='*100)
+	odata_get_images(S,online_clean)
 
 	# V.TRIGGER REQUEST FOR SOME (20) PRODUCTS AND EXIT
-	# ----------------------------------------	
-	print("\nTRIGGERING RETRIEVAL OF (20) OFFLINE PRODUCTS...")
+	# ----------------------------------------
+	print('\n' + "="*100)	
+	print("TRIGGERING RETRIEVAL OF (UP TO 20) OFFLINE PRODUCTS...")
 	print("="*100)
 	trigger_offline_multiple(S,offline)
 
