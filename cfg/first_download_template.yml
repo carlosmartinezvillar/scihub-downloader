@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: first-download
+
+spec:
+
+  backoffLimit: 0
+  template:
+    spec:
+      #restart on failure?
+      restartPolicy: Never
+
+      #container def
+      containers:
+        - name: dl-container
+          image: gitlab-registry.nrp-nautilus.io/martinezci/img-processor:latest
+          workingDir: /
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: DHUS_USER
+              value: <scihub-username>
+            - name: DHUS_PASS
+              value: <scihub-password>
+            - name: DATA_DIR
+              value: /data/
+
+          resources:
+            limits:
+              memory: 16Gi
+              cpu: 8
+            requests:
+              memory: 16Gi
+              cpu: 8
+
+          volumeMounts:
+          - mountPath: /dat
+            name: s2-data
+
+          command: ["/bin/bash","-c"]
+          args:
+            - git clone https://github.com/carlosmartinezvillar/scihub-downloader.git;
+              cd scihub-downloader/ && python3 download.py -g <coordinate_list.txt>
+
+
+      #pvc vol
+      volumes:
+        - name: s2-data
+          persistentVolumeClaim:
+            claimName: s2-lakes-pvc

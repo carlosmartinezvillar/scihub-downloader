@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: offline-update
+
+spec:
+
+  backoffLimit: 0
+  template:
+    spec:
+      #restart on failure?
+      restartPolicy: Never
+
+      #container def
+      containers:
+        - name: <my-container-name>
+          image: gitlab-registry.nrp-nautilus.io/martinezci/img-processor:latest
+          workingDir: /
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: DHUS_USER
+              value: <scihub-username>
+            - name: DHUS_PASS
+              value: <scihub-password>
+            - name: DATA_DIR
+              value: /data/
+
+          resources:
+            limits:
+              memory: 16Gi
+              cpu: 8
+            requests:
+              memory: 16Gi
+              cpu: 8
+
+          volumeMounts:
+          - mountPath: /data
+            name: <vol-name>
+
+          command: ["/bin/bash","-c"]
+          args:
+            - git clone https://github.com/carlosmartinezvillar/scihub-downloader.git;
+              cd scihub-downloader/ && python3 download.py -f /data/offline.tsv
+
+
+      #pvc vol
+      volumes:
+        - name: <vol-name>
+          persistentVolumeClaim:
+            claimName: <the-actual-pvc-name>
