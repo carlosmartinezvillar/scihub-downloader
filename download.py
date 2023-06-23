@@ -681,6 +681,9 @@ if __name__ == '__main__':
 		print("--> RETRIEVING LIST FROM %s" % args.input_file)	
 		print("="*100)
 		results = np.loadtxt(args.input_file,dtype=str)
+		if len(results) == 0:
+			print("Empty file loaded. Exiting.")
+			sys.exit(0)
 
 		# b. Latest status
 		print("\nChecking Online/Offline status of products...")
