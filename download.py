@@ -355,9 +355,10 @@ def odata_mtdxml_uri(row):
 	return uri
 
 
-def odata_get_images_worker(S,folder,uri,thread_id):
+def odata_get_images_worker(S,safe_folder,uri,thread_id):
 
 	#IMAGE PATH in .SAFE SUBDIR
+	subdir   = DATA_DIR + safe_folder + '/'
 	img_path = subdir + uri.split('/')[-2].split('(')[1].rstrip(')').strip('\'')
 
 	#DIR CHECK
@@ -400,13 +401,17 @@ def odata_get_images(S,online):
 
 		if os.path.isdir(subdir) and os.path.isfile(subdir + 'MTD.xml'):
 			print("\nDownloading bands for product %s" % row[1],flush=True)
-			pool =  Pool(processes=len(BAND_RES))
+			pool = Pool(processes=len(BAND_RES))
 			for i,b in enumerate(BAND_RES):
 				uri = odata_image_uri(row,b)
 				pool.apply_async(odata_get_images_worker,args=(S,row[1],uri,i))
 			pool.close()
 			pool.join()
 			append_tsv_row(DATA_DIR + 'downloaded.tsv',row) #success
+
+
+def odata_get_images_error(e):
+	print("In odata_get_images_worker() got error: %s" % e)
 
 
 def odata_get_xmls_worker(S,row,id):
