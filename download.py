@@ -63,7 +63,7 @@ parser.add_argument('-g','--geo_file',
 
 ####################################################################################################
 # HELPER FUNCTIONS
-###################################################	#################################################
+####################################################################################################
 def load_table_and_reduce(path):
 	min_area = 50.0
 	with open('sites_table.csv') as fp:
@@ -367,7 +367,7 @@ def odata_get_images_worker(S,safe_folder,uri,thread_id):
 		if os.path.getsize(img_path) == 0: #FILE SIZE 0?
 			os.remove(img_path) #REMOVE FILE
 		else:
-			print("Found non-empty file %s. Skipping." % img_path) #FILE GOOD!
+			print("Found %s. Skipping" % img_path) #FILE GOOD!
 			return
 
 	#DOWNLOAD
@@ -621,7 +621,7 @@ def trigger_offline_single(S,row):
 ####################################################################################################
 if __name__ == '__main__':
 
-	# __spec__ = None #TEMP for pdb multithreaded
+	__spec__ = None #TEMP for pdb multithreaded
 
 	params = {
 		'coordinates': "",
@@ -751,6 +751,10 @@ if __name__ == '__main__':
 	print('='*100)
 	odata_get_images(S,online_clean)
 
+	#remove duplicates in downloaded.tsv file
+	downloaded = remove_duplicates(np.loadtxt(DATA_DIR+'downloaded.tsv',dtype=str))
+	np.savetxt(DATA_DIR+'downloaded.tsv',downloaded,fmt='%s',delimiter='\t')
+
 
 	# V.TRIGGER REQUEST FOR SOME (20) PRODUCTS AND EXIT
 	# ----------------------------------------
@@ -759,5 +763,9 @@ if __name__ == '__main__':
 	print("="*100)
 	trigger_offline_multiple(S,offline)
 
-
+	# VI. REMOVE DONWLOADED FROM OFFLINE TSV
+	# ----------------------------------------
+	intersect = np.intersect1d(offline[:,0],downloaded[:,0],assume_unique=True,return_indices=True)
+	new_offline = np.delete(offline,intersect[1],0)
+	np.savetxt(DATA_DIR+'offline.tsv',new_offline,fmt='%s',delimiter='\t')
 
