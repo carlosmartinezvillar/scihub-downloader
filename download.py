@@ -389,8 +389,8 @@ def odata_get_images_worker(S,safe_folder,uri,thread_id):
 
 def odata_get_images(S,online):
 
-	for row in online:
-
+	for i_r,row in enumerate(online):
+		N = online.shape[0]
 		#The subir path for all bands in row product
 		subdir = DATA_DIR + row[1]+ '/'
 
@@ -400,7 +400,7 @@ def odata_get_images(S,online):
 		# else: 
 
 		if os.path.isdir(subdir) and os.path.isfile(subdir + 'MTD.xml'):
-			print("\nDownloading bands for product %s" % row[1],flush=True)
+			print("\n[%i/%i] Downloading bands for product %s" % (i_r,N,row[1]),flush=True)
 			pool = Pool(processes=len(BAND_RES))
 			for i,b in enumerate(BAND_RES):
 				uri = odata_image_uri(row,b)
@@ -685,13 +685,14 @@ if __name__ == '__main__':
 		print("\nChecking Online/Offline status of products...")
 		print("-"*80)		
 		status  = get_status(S,results)
-		current = np.append(results[:,0:-1],status.reshape((results.shape[0],1)),axis=1)
+		current = np.append(results[:,0:4],status.reshape((results.shape[0],1)),axis=1)
 		online  = current[status=='online']
 		offline = current[status=='offline']
 
 		# c. Status feedback + update offline
 		updated = ((results[:,-1]=='offline') & (status=='online')).sum()
 		print("%i products previously offline now available.\n" % updated)
+
 		np.savetxt(DATA_DIR + 'offline.tsv', offline,fmt='%s',delimiter='\t')
 		print("Updating offline products in %s" % DATA_DIR+"offline.tsv" )	
 
