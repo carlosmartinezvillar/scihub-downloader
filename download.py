@@ -646,9 +646,9 @@ if __name__ == '__main__':
 		# ----------------------------------------	
 		# a. search
 		print('\n' + "="*100)
-		print("--> SEARCHING FOR PRODUCTS IN %s" % geo_file)
+		print("--> SEARCHING FOR PRODUCTS IN %s" % args.geo_file)
 		print("="*100)
-		results = opensearch_coordinate_list(S,geo_file,params)
+		results = opensearch_coordinate_list(S,args.geo_file,params)
 
 		# b. Latest status
 		print("\nChecking Online/Offline status of products...")
