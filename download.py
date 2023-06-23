@@ -374,7 +374,7 @@ def odata_get_images_worker(S,safe_folder,uri,thread_id):
 	tsize = int(res.headers.get('content-length',0))
 	bsize = 65536
 	bar = tqdm(total=tsize,unit='iB',leave=True,unit_scale=True,ncols=80,position=thread_id,
-		ascii=True,delay=0.2)
+		ascii=True)
 	with open(img_path,'wb') as fp:
 		for chunk in res.iter_content(bsize):
 			bar.update(fp.write(chunk))
@@ -404,7 +404,7 @@ def odata_get_images(S,online):
 			pool = Pool(processes=len(BAND_RES))
 			for i,b in enumerate(BAND_RES):
 				uri = odata_image_uri(row,b)
-				pool.apply_async(odata_get_images_worker,args=(S,row[1],uri,i))
+				pool.apply_async(odata_get_images_worker,args=(S,row[1],uri,i+1))
 			pool.close()
 			pool.join()
 			append_tsv_row(DATA_DIR + 'downloaded.tsv',row) #success
@@ -677,7 +677,7 @@ if __name__ == '__main__':
 		# ----------------------------------------
 		# a. load		
 		print("="*100)
-		print("--> RETRIEVING LIST FROM %s" % args.input_file)		
+		print("--> RETRIEVING LIST FROM %s" % args.input_file)	
 		print("="*100)
 		results = np.loadtxt(args.input_file,dtype=str)
 
@@ -685,13 +685,16 @@ if __name__ == '__main__':
 		print("\nChecking Online/Offline status of products...")
 		print("-"*80)		
 		status  = get_status(S,results)
-		current = np.append(results[:,0:-1],status.reshape((results.shape[0],1)),axis=1)
+		current = np.append(results[:,0:5],status.reshape((results.shape[0],1)),axis=1)
 		online  = current[status=='online']
 		offline = current[status=='offline']
 
-		# c. Status feedback
+		# c. Status feedback + update offline
 		updated = ((results[:,-1]=='offline') & (status=='online')).sum()
 		print("%i products previously offline now available.\n" % updated)
+		np.savetxt(DATA_DIR + 'offline.tsv', offline,fmt='%s',delimiter='\t')
+		print("Updating offline products in %s" % DATA_DIR+"offline.tsv" )	
+
 
 	# Online files?
 	if len(online) <= 0:
@@ -743,4 +746,6 @@ if __name__ == '__main__':
 	print("TRIGGERING RETRIEVAL OF (UP TO 20) OFFLINE PRODUCTS...")
 	print("="*100)
 	trigger_offline_multiple(S,offline)
+
+
 
