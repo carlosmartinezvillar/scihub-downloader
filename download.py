@@ -445,7 +445,7 @@ def odata_get_xmls_worker(S,row,id):
 			for chunk in resp.iter_content(block_size):
 				written += fp.write(chunk)
 	except: #Unknown err
-		print("odata_get_mtdxml_worker(): Error during download.")
+		print("odata_get_xmls_worker(): Error during download.")
 		if os.path.isfile(out_path):
 			os.remove(out_path)
 		os.rmdir(DATA_DIR + row[1])
@@ -473,8 +473,8 @@ def odata_get_xmls(S,online):
 	end = time.time()
 	
 	result = np.array(result)
-	print("odata_get_mtdxml(): time - %s" % (end-start))
-	print("%i/%i metadata files downloaded." % (result.sum(),N) )
+	print("odata_get_xmls(): time - %s" % (end-start))
+	print("%i/%i metadata files downloaded.\n" % (result.sum(),N) )
 	return result
 
 
@@ -497,7 +497,7 @@ def parse_xml(row):
 
 	"""
 	path = DATA_DIR + row[1] + '/MTD.xml'
-	print("Parsing %s..." % path)
+	print("--> Parsing %s..." % path)
 
 	# if this throws AssertError something's very wrong...
 	assert os.path.isfile(path), "No file found in path %s" % path
@@ -741,6 +741,7 @@ if __name__ == '__main__':
 	for row in online_filed[online_filed[:,-1]=='-']:
 		append_tsv_row(DATA_DIR+'error.tsv',row[0:-2])
 	errors_file = np.loadtxt(DATA_DIR+'error.tsv',dtype=str)
+	print("\nRemoving duplicates in error.tsv...")
 	np.savetxt(DATA_DIR+'error.tsv',remove_duplicates(errors_file),fmt='%s',delimiter='\t')
 
 
@@ -752,6 +753,7 @@ if __name__ == '__main__':
 	odata_get_images(S,online_clean)
 
 	#remove duplicates in downloaded.tsv file
+	print("Removing duplicates in dowloaded.tsv...")
 	downloaded = remove_duplicates(np.loadtxt(DATA_DIR+'downloaded.tsv',dtype=str))
 	np.savetxt(DATA_DIR+'downloaded.tsv',downloaded,fmt='%s',delimiter='\t')
 
