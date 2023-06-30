@@ -14,7 +14,7 @@ import sys
 #Some restrictive parameters
 DATA_DIR    = os.getenv('DATA_DIR')
 LOGS_DIR    = "./log/"
-TEMP_DIR    = DATA_DIR + "temp/"
+# TEMP_DIR    = DATA_DIR + "temp/"
 OS_BASE_URI = "https://scihub.copernicus.eu/dhus/search"    #OpenSearch API service root URI
 OD_BASE_URI = "https://scihub.copernicus.eu/dhus/odata/v1/" #OpenData   API service root URI
 S2_BAND_IDX = ['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B8A','B9','B10','B11','B12']
@@ -583,7 +583,7 @@ def get_status(S,product_list):
 
 	start = time.time()
 	with Pool(processes=8) as pool:
-		statuses = pool.starmap(get_status_worker,Z,chunksize=1)
+		statuses = pool.starmap(get_status_worker,Z)
 	end   = time.time()
 
 	print("get_status(): time - %f" % (end-start) )
